@@ -106,7 +106,7 @@ data = (
         .normalize(imagenet_stats)
 )
 #print(type(data.__getitem__(3)))
-learn = create_cnn(data, models.resnet50, pretrained=False, metrics=[accuracy, map5])
+learn = create_cnn(data, models.resnet18, pretrained=True, metrics=[accuracy])
 
 learn.fit_one_cycle(2)
 

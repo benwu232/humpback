@@ -2,7 +2,8 @@ import numpy as np
 import torch
 import pandas as pd
 
-
+USE_CUDA = torch.cuda.is_available()
+device = torch.device("cuda" if USE_CUDA else "cpu")
 
 def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1):
     '''
@@ -37,6 +38,44 @@ def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1):
             train_list.extend(images)
 
     return train_list, val_list
+
+
+def split_whale_set1(df, nth_split=0, total_split=5, use_new_whale=True, seed=1):
+    np.random.seed(seed)
+    #list(df_known.groupby('Id'))
+    train_list = []
+    val_list = []
+    df_known = df[df.Id!='new_whale']
+    for name, group in df_known.groupby('Id'):
+        #print(name, len(group), group.index, type(group))
+        #if name == 'w_b82d0eb':
+        #    print(name, df_known[df_known.Id==name])
+        group_num = len(group)
+        idxes = group.index.values
+        if group_num > 1:
+            np.random.shuffle(idxes)
+            #idxes = list(idxes)
+            span = max(1, group_num // total_split)
+            val_idxes = idxes[nth_split*span:(nth_split+1)*span]
+            train_idxes = list(set(idxes) - set(val_idxes))
+            val_list.extend(val_idxes)
+            train_list.extend(train_idxes)
+        else:
+            train_list.extend(idxes)
+
+    if use_new_whale:
+        df_new = df[df.Id=='new_whale']
+        train_list.extend(df_new.index.values)
+
+    return train_list, val_list
+
+
+def make_whale_id_dict(df):
+    whale_id_dict = {}
+    for name, group in df.groupby('Id'):
+        whale_id_dict[name] = group.Image.tolist()
+    return whale_id_dict
+
 
 
 # https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/average_precision.py
