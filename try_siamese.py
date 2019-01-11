@@ -38,6 +38,14 @@ val_item_list = np.asarray(val_list)
 # data2 = data1.split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
 # data3 = data2.label_from_func(lambda path: fn2label[path2fn(str(path))])
 
+
+class DataLoaderEx(DeviceDataLoader):
+    def __post_init__(self):
+        super().__post_init__()
+
+    def proc_batch(self, b):
+        return b
+
 data = (
     ImageItemList
         # .from_df(df_known, 'data/train', cols=['Image'])
@@ -102,7 +110,7 @@ class SiameseDataset(Dataset):
     def find_different(self, idx1, idx2=None):
         #already have idx2
         if idx2 is not None:
-            return [self.ds[idx1][0], self.ds[idx2][0], 0]
+            return idx2
 
         whale_id = self.whale_ids[idx1]
         while True:
@@ -132,18 +140,28 @@ def siamese_collate(items):
         neg_list.append(neg.data)
         pos_valid_masks.append(mask)
 
-    batch = TensorDict()
-    batch.dict['anchors'] = torch.tensor(np.stack(anchor_list))
-    batch.dict['pos_ims'] = torch.tensor(np.stack(pos_list))
-    batch.dict['neg_ims'] = torch.tensor(np.stack(neg_list))
-    batch.dict['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks))
-    return batch, batch.dict['pos_valid_masks'] # just for (data, target) format
+    #batch = []
+    #batch.append(torch.tensor(np.stack(anchor_list)).to(device))
+    #batch.append(torch.tensor(np.stack(pos_list)).to(device))
+    #batch.append(torch.tensor(np.stack(neg_list)).to(device))
+    #batch.append(torch.tensor(np.stack(pos_valid_masks)).to(device))
+    #return batch, batch[-1] # just for (data, target) format
+
+    batch = {}
+    batch['anchors'] = torch.tensor(np.stack(anchor_list)).to(device)
+    batch['pos_ims'] = torch.tensor(np.stack(pos_list)).to(device)
+    batch['neg_ims'] = torch.tensor(np.stack(neg_list)).to(device)
+    batch['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks)).to(device)
+    batch_len = len(batch['anchors'])
+    target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
+    return batch, target
+
 
 train_dl = DataLoader(
     SiameseDataset(data.train),
     batch_size=BS,
     shuffle=True,
-    collate_fn=siamese_collate,
+    #collate_fn=siamese_collate,
     num_workers=NUM_WORKERS
 )
 
@@ -151,11 +169,14 @@ valid_dl = DataLoader(
     SiameseDataset(data.valid),
     batch_size=BS,
     shuffle=False,
-    collate_fn=siamese_collate,
+    #collate_fn=siamese_collate,
     num_workers=NUM_WORKERS
 )
 
 data_bunch = ImageDataBunch(train_dl, valid_dl, collate_fn=siamese_collate)
+#data_bunch = DataBunch(train_dl, valid_dl, collate_fn=siamese_collate)
+data_bunch.train_dl = DataLoaderEx(train_dl, None, None, siamese_collate)
+data_bunch.valid_dl = DataLoaderEx(valid_dl, None, None, siamese_collate)
 
 def normalize_batch(batch):
     stat_tensors = [torch.tensor(l).to(device) for l in imagenet_stats]
@@ -163,9 +184,11 @@ def normalize_batch(batch):
 
 data_bunch.add_tfm(normalize_batch)
 
-#for train_batch in train_dl:
-#    print(train_batch)
+
+#for train_batch, target in data_bunch.train_dl:
+#    print(len(train_batch), len(train_batch[0]))
 #    break
+#exit()
 
 
 def cnn_activations_count(model):
@@ -174,29 +197,52 @@ def cnn_activations_count(model):
 
 
 class Siamese(nn.Module):
-    def __init__(self, lin_ftrs=128, arch=models.resnet18):
+    def __init__(self, lin_ftrs=128, arch=models.resnet18, norm=1):
         super().__init__()
         self.cnn = create_body(arch)
         self.fc1 = nn.Linear(cnn_activations_count(self.cnn), lin_ftrs)
         self.fc2 = nn.Linear(lin_ftrs, 1)
+        self.norm = norm
 
-    def forward(self, batch):
-        xa = self.cnn(im_a)
-        xa = self.process_features(xa)
-        xa = self.fc1(xa)
-        emb_a = torch.sigmoid(xa)
+    def siamese_emb(self, im):
+        x = self.cnn(im)
+        x = self.process_features(x)
+        x = self.fc1(x)
+        emb = torch.sigmoid(x)
+        return emb
 
-        xb = self.cnn(im_p)
-        xb = self.process_features(xb)
-        xb = self.fc1(xb)
-        emb_b = torch.sigmoid(xb)
+    def distance(self, a, b, norm=1):
+        if self.norm == 1:
+            return torch.abs(a - b)
+        else:
+            return (a - b) ** 2
 
-        distance = (emb_a - emb_b) ** 2
-        prob = torch.sigmoid(self.fc2(distance))
+    def forward_test(self, im_a, im_b):
+        emb_a = self.siamese_emb(im_a)
+        emb_b = self.siamese_emb(im_b)
+        dist_v = self.distance(emb_a, emb_b)
+        prob = torch.sigmoid(self.fc2(dist_v))
         return prob
 
+    def forward_train(self, batch):
+        anchor_emb = self.siamese_emb(batch['anchors'])
+        pos_emb = self.siamese_emb(batch['pos_ims'])
+        neg_emb = self.siamese_emb(batch['neg_ims'])
 
-    def calculate_distance(self, x1, x2): return (x1 - x2).abs_()
+        pos_dist = self.distance(anchor_emb, pos_emb)
+        neg_dist = self.distance(anchor_emb, neg_emb)
+
+        pos_logits = self.fc2(pos_dist)
+        neg_logits = self.fc2(neg_dist)
+        #return pos_logits, neg_logits, pos_dist, neg_dist
+        return torch.cat((pos_logits, neg_logits))
+
+    def forward(self, batch):
+        if self.training:
+            return self.forward_train(batch)
+        else:
+            return self.forward_test(batch)
+
     def process_features(self, x): return x.reshape(x.shape[0], -1)
 
 
