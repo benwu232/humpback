@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import pandas as pd
+import torch
+from fastai.basic_data import *
 
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
@@ -75,6 +77,101 @@ def make_whale_id_dict(df):
     for name, group in df.groupby('Id'):
         whale_id_dict[name] = group.Image.tolist()
     return whale_id_dict
+
+
+class DataLoaderMod(DeviceDataLoader):
+    def __post_init__(self):
+        super().__post_init__()
+
+    def proc_batch(self, b):
+        data = {}
+        for name in b[0]:
+            data[name] = b[0][name].to(device)
+        target = b[1].to(device)
+        return data, target
+
+
+class SiameseDataset(torch.utils.data.Dataset):
+    def __init__(self, ds):
+        self.ds = ds
+        self.whale_ids = ds.y.items
+        self.id_dict = self.make_id_dict()
+        self.len = len(self.ds)
+
+    def make_id_dict(self):
+        id_dict = {}
+        for k, id in enumerate(self.whale_ids):
+            if id not in id_dict:
+                id_dict[id] = [k]
+            else:
+                id_dict[id].append(k)
+
+        for id in id_dict:
+            id_dict[id] = np.asarray(id_dict[id])
+
+        return id_dict
+
+    def __len__(self):
+        return self.len
+
+    def __getitem__(self, idx):
+        idx_a = idx
+        idx_p, type = self.find_same(idx)
+        idx_n = self.find_different(idx)
+        return self.ds[idx_a][0], self.ds[idx_p][0], self.ds[idx_n][0], type
+
+    def find_same(self, idx):
+        whale_id = self.whale_ids[idx]
+        c = self.id_dict[whale_id]
+
+        # for 1-class or new_whale, there is no same
+        if len(c) == 1 or len(c) > 100:
+            return idx, 0   #0 means no anchor-positive pair
+
+        candidates = c[c!=idx]
+        np.random.shuffle(candidates)
+        return candidates[0], 1
+
+    def find_different(self, idx1, idx2=None):
+        #already have idx2
+        if idx2 is not None:
+            return idx2
+
+        whale_id = self.whale_ids[idx1]
+        while True:
+            idx2 = np.random.randint(self.len//2)
+            if self.whale_ids[idx2] != whale_id:
+                break
+        return idx2
+
+def siamese_collate(items):
+    anchor_list = []
+    pos_list = []
+    neg_list = []
+    pos_valid_masks = []
+
+    for anchor, pos, neg, mask in items:
+        anchor_list.append(anchor.data)
+        pos_list.append(pos.data)
+        neg_list.append(neg.data)
+        pos_valid_masks.append(mask)
+
+    #batch = []
+    #batch.append(torch.tensor(np.stack(anchor_list)).to(device))
+    #batch.append(torch.tensor(np.stack(pos_list)).to(device))
+    #batch.append(torch.tensor(np.stack(neg_list)).to(device))
+    #batch.append(torch.tensor(np.stack(pos_valid_masks)).to(device))
+    #return batch, batch[-1] # just for (data, target) format
+
+    batch = {}
+    batch['anchors'] = torch.tensor(np.stack(anchor_list))
+    batch['pos_ims'] = torch.tensor(np.stack(pos_list))
+    batch['neg_ims'] = torch.tensor(np.stack(neg_list))
+    batch['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks))
+    batch_len = len(batch['anchors'])
+    target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
+    return batch, target
+
 
 
 

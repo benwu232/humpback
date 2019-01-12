@@ -1,3 +1,5 @@
+import torch
+
 from fastai.vision import *
 from fastai.metrics import accuracy
 from fastai.basic_data import *
@@ -7,9 +9,11 @@ from fastai.callbacks.hooks import num_features_model, model_sizes
 from utils import *
 import fastai
 
+#torch.multiprocessing.set_start_method('forkserver', force=True)
+
 SZ = 224
-BS = 16
-NUM_WORKERS = 1
+BS = 64
+NUM_WORKERS = 6
 SEED = 1
 
 root_path = '../input/'
@@ -31,21 +35,6 @@ fn2label = {row[1].Image: row[1].Id for row in df0.iterrows()}
 id2file = make_whale_id_dict(df0)
 file2id = df0.set_index('Image').to_dict()
 
-train_item_list = np.asarray(train_list)
-val_item_list = np.asarray(val_list)
-
-# data1 = ImageItemList.from_folder('./data/train')
-# data2 = data1.split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
-# data3 = data2.label_from_func(lambda path: fn2label[path2fn(str(path))])
-
-
-class DataLoaderEx(DeviceDataLoader):
-    def __post_init__(self):
-        super().__post_init__()
-
-    def proc_batch(self, b):
-        return b
-
 data = (
     ImageItemList
         # .from_df(df_known, 'data/train', cols=['Image'])
@@ -61,101 +50,6 @@ data = (
         #.databunch(bs=BS, num_workers=NUM_WORKERS, path=root_path)
         #.normalize(imagenet_stats)
 )
-
-
-def is_even(num): return num % 2 == 0
-
-
-class SiameseDataset(Dataset):
-    def __init__(self, ds):
-        self.ds = ds
-        self.whale_ids = ds.y.items
-        self.id_dict = self.make_id_dict()
-        self.len = len(self.ds)
-
-    def make_id_dict(self):
-        id_dict = {}
-        for k, id in enumerate(self.whale_ids):
-            if id not in id_dict:
-                id_dict[id] = [k]
-            else:
-                id_dict[id].append(k)
-
-        for id in id_dict:
-            id_dict[id] = np.asarray(id_dict[id])
-
-        return id_dict
-
-    def __len__(self):
-        return self.len
-
-    def __getitem__(self, idx):
-        idx_a = idx
-        idx_p, type = self.find_same(idx)
-        idx_n = self.find_different(idx)
-        return self.ds[idx_a][0], self.ds[idx_p][0], self.ds[idx_n][0], type
-
-    def find_same(self, idx):
-        whale_id = self.whale_ids[idx]
-        c = self.id_dict[whale_id]
-
-        # for 1-class or new_whale, there is no same
-        if len(c) == 1 or len(c) > 100:
-            return idx, 0   #0 means no anchor-positive pair
-
-        candidates = c[c!=idx]
-        np.random.shuffle(candidates)
-        return candidates[0], 1
-
-    def find_different(self, idx1, idx2=None):
-        #already have idx2
-        if idx2 is not None:
-            return idx2
-
-        whale_id = self.whale_ids[idx1]
-        while True:
-            idx2 = np.random.randint(self.len//2)
-            if self.whale_ids[idx2] != whale_id:
-                break
-        return idx2
-
-
-class TensorDict(object):
-    def __init__(self):
-        self.dict = {}
-
-    def to(self, device):
-        for key in self.dict:
-            self.dict[key] = self.dict[key].to(device)
-
-def siamese_collate(items):
-    anchor_list = []
-    pos_list = []
-    neg_list = []
-    pos_valid_masks = []
-
-    for anchor, pos, neg, mask in items:
-        anchor_list.append(anchor.data)
-        pos_list.append(pos.data)
-        neg_list.append(neg.data)
-        pos_valid_masks.append(mask)
-
-    #batch = []
-    #batch.append(torch.tensor(np.stack(anchor_list)).to(device))
-    #batch.append(torch.tensor(np.stack(pos_list)).to(device))
-    #batch.append(torch.tensor(np.stack(neg_list)).to(device))
-    #batch.append(torch.tensor(np.stack(pos_valid_masks)).to(device))
-    #return batch, batch[-1] # just for (data, target) format
-
-    batch = {}
-    batch['anchors'] = torch.tensor(np.stack(anchor_list)).to(device)
-    batch['pos_ims'] = torch.tensor(np.stack(pos_list)).to(device)
-    batch['neg_ims'] = torch.tensor(np.stack(neg_list)).to(device)
-    batch['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks)).to(device)
-    batch_len = len(batch['anchors'])
-    target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
-    return batch, target
-
 
 train_dl = DataLoader(
     SiameseDataset(data.train),
@@ -175,8 +69,8 @@ valid_dl = DataLoader(
 
 data_bunch = ImageDataBunch(train_dl, valid_dl, collate_fn=siamese_collate)
 #data_bunch = DataBunch(train_dl, valid_dl, collate_fn=siamese_collate)
-data_bunch.train_dl = DataLoaderEx(train_dl, None, None, siamese_collate)
-data_bunch.valid_dl = DataLoaderEx(valid_dl, None, None, siamese_collate)
+data_bunch.train_dl = DataLoaderMod(train_dl, None, None, siamese_collate)
+data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
 
 def normalize_batch(batch):
     stat_tensors = [torch.tensor(l).to(device) for l in imagenet_stats]
@@ -202,35 +96,35 @@ class Siamese(nn.Module):
         self.cnn = create_body(arch)
         self.fc1 = nn.Linear(cnn_activations_count(self.cnn), lin_ftrs)
         self.fc2 = nn.Linear(lin_ftrs, 1)
-        self.norm = norm
+        self.dist_type = norm
 
-    def siamese_emb(self, im):
+    def cal_embedding(self, im):
         x = self.cnn(im)
         x = self.process_features(x)
         x = self.fc1(x)
         emb = torch.sigmoid(x)
         return emb
 
-    def distance(self, a, b, norm=1):
-        if self.norm == 1:
-            return torch.abs(a - b)
+    def cal_distance(self, emb1, emb2):
+        if self.dist_type == 1:
+            return torch.abs(emb1 - emb2)
         else:
-            return (a - b) ** 2
+            return (emb1 - emb2) ** 2
 
     def forward_test(self, im_a, im_b):
-        emb_a = self.siamese_emb(im_a)
-        emb_b = self.siamese_emb(im_b)
-        dist_v = self.distance(emb_a, emb_b)
+        emb_a = self.cal_embedding(im_a)
+        emb_b = self.cal_embedding(im_b)
+        dist_v = self.cal_distance(emb_a, emb_b)
         prob = torch.sigmoid(self.fc2(dist_v))
         return prob
 
     def forward_train(self, batch):
-        anchor_emb = self.siamese_emb(batch['anchors'])
-        pos_emb = self.siamese_emb(batch['pos_ims'])
-        neg_emb = self.siamese_emb(batch['neg_ims'])
+        anchor_emb = self.cal_embedding(batch['anchors'])
+        pos_emb = self.cal_embedding(batch['pos_ims'])
+        neg_emb = self.cal_embedding(batch['neg_ims'])
 
-        pos_dist = self.distance(anchor_emb, pos_emb)
-        neg_dist = self.distance(anchor_emb, neg_emb)
+        pos_dist = self.cal_distance(anchor_emb, pos_emb)
+        neg_dist = self.cal_distance(anchor_emb, neg_emb)
 
         pos_logits = self.fc2(pos_dist)
         neg_logits = self.fc2(neg_dist)
