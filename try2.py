@@ -28,7 +28,7 @@ ex_df = df0.join(im_count, on='Id')
 
 path2fn = lambda path: re.search('\w*\.jpg$', path).group(0)
 fn2label = {row[1].Image: row[1].Id for row in df0.iterrows()}
-id2file = make_whale_id_dict(df0)
+id2file = make_whale_class_dict(df0)
 file2id = df0.set_index('Image').to_dict()
 
 train_item_list = np.asarray(train_list)
