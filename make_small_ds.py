@@ -7,6 +7,9 @@ dst_train_dir = '../input/train1/'
 src_test_dir = '../input/test/'
 dst_test_dir = '../input/test1/'
 
+os.makedirs(dst_train_dir, exist_ok=True)
+os.makedirs(dst_test_dir, exist_ok=True)
+
 df = pd.read_csv('../input/train.csv')
 
 train_list = []

@@ -3,7 +3,9 @@ from utils import *
 from fastai.callbacks import *
 
 #some parameters
-debug = 1
+debug = 0
+enable_lr_find = 1
+
 arch = models.resnet18
 im_size = 224
 if debug == 1:
@@ -12,9 +14,12 @@ if debug == 1:
     dl_workers = 0
 else:
     train_batch_size = 64
-    val_batch_size = 128
+    val_batch_size = 256
     dl_workers = 6
 seed = 1
+
+emb_len = 128
+dist_norm = 1
 
 root_path = '../input/'
 if debug:
@@ -108,7 +113,7 @@ data_bunch.add_tfm(normalize_batch)
 #    break
 #exit()
 
-siamese = SiameseNet(emb_len=128, arch=arch, width=im_size, height=im_size, norm=1)
+siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, norm=dist_norm)
 
 learn = LearnerEx(data_bunch,
                 siamese,
@@ -121,5 +126,16 @@ cb_save_model = SaveModelCallback(learn, every="epoch", name=f"siamese")
 cb_siamese_validate = SiameseValidateCallback(learn)
 cbs = [cb_save_model, cb_siamese_validate]
 
-learn.fit_one_cycle(2, callbacks=cbs)
+learn.fit_one_cycle(1)
+learn.unfreeze()
 
+if enable_lr_find:
+    print('LR plotting ...')
+    learn.lr_find()
+    learn.recorder.plot()
+    plt.savefig('lr_find.png')
+
+max_lr = 1e-4
+#lrs = [max_lr/100, max_lr/10, max_lr]
+#learn.fit_one_cycle(300, lrs)
+learn.fit_one_cycle(300, max_lr, callbacks=cbs)

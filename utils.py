@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 import torch
 
+import fastai
 from fastai.vision import *
 from fastai.basic_data import *
 from fastai.metrics import accuracy
@@ -15,24 +16,29 @@ device = torch.device("cuda" if USE_CUDA else "cpu")
 train_list_dbg = ['00050a15a.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '0d5777fc2.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '6662f0d1c.jpg']
 val_list_dbg = ['fffde072b.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'cd650e905.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', 'a8d5237c0.jpg']
 
-def map_per_image(label, predictions):
-    """Computes the precision score of one image.
+def plot_lr(self):
+        if not in_ipynb():
+            plt.switch_backend('agg')
+        plt.xlabel("iterations")
+        plt.ylabel("learning rate")
+        plt.plot(self.iterations, self.lrs)
+        if not in_ipynb():
+            plt.savefig(os.path.join(self.save_path, 'lr_plot.png'))
 
-    Parameters
-    ----------
-    label : string
-            The true label of the image
-    predictions : list
-            A list of predicted elements (order does matter, 5 predictions allowed per image)
+def cal_mapk(pred_matrix:tensor, targets:tensor, k=5, average=True):
+    topk_probs, topk_idxes = pred_matrix.topk(k, dim=1)
+    onehots = (topk_idxes == targets.view(-1, 1))
+    onehots = onehots.detach().cpu().numpy()
 
-    Returns
-    -------
-    score : double
-    """
-    try:
-        return 1 / (predictions[:5].index(label) + 1)
-    except ValueError:
-        return 0.0
+    mapk = np.zeros(len(onehots))
+    for i, onehot in enumerate(onehots):
+        r = np.where(onehot == 1)[0]
+        if r:
+            mapk[i] = 1 / (r[0] + 1)
+    if average:
+        mapk = mapk.mean()
+    return mapk
+
 
 # https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/average_precision.py
 def apk(actual, predicted, k=10):
@@ -411,14 +417,12 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
 
 def siamese_validate(val_dl, model, train_rf_dl):
     model.eval()
-    batch_size = val_dl.batch_size
-    dl_workers = val_dl.num_workers
     with torch.no_grad():
         # calculate embeddings of all validation_set
         val_embs, targets = ds_siamese_emb(val_dl, model, ds_with_target=True)
         val_emb_tensor = torch.cat(val_embs)
         val_target_tensor = torch.cat(targets)
-        print(val_emb_tensor.shape, val_target_tensor.shape)
+        #print(val_emb_tensor.shape, val_target_tensor.shape)
 
         # calculate embeddings of all classes except new_whale
         train_rf_embs, rf_targets = ds_siamese_emb(train_rf_dl, model, ds_with_target=True)
@@ -441,7 +445,43 @@ def siamese_validate(val_dl, model, train_rf_dl):
         # todo:insert new_whale
 
         # cal map5
-        map5(sim_matrix, val_emb_tensor)
+        #top5_probs, top5_idxes = sim_matrix.topk(5, dim=1)
+        #onehots = (top5_idxes == val_target_tensor.view(-1, 1))
+        #onehots = onehots.detach().cpu().numpy()
+
+        #maps = np.zeros(len(onehots))
+        #for k, onehot in enumerate(onehots):
+        #    r = np.where(onehot == 1)[0]
+        #    if r:
+        #        maps[k] = 1 / (r[0] + 1)
+        map5 = cal_mapk(sim_matrix, val_target_tensor, k=5)
+        return map5
+
+
+class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
+    "A `Callback` to validate SiameseNet."
+
+    def __init__(self, learn):
+        super().__init__(learn)
+#        class_1_dict = gen_class_reference(self.learn.data.train)
+#        self.class_dl = DataLoader(
+#            Class1Dataset(self.learn.data.train, class_1_dict),
+#            batch_size=self.learn.data.valid_dl.batch_size,
+#            shuffle=False,
+#            drop_last=False,
+#            num_workers=self.learn.data.valid_dl.dl_workers
+#        )
+
+    #def on_epoch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    #    map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.train_rf_dl)
+    #    print()
+    #    return map5
+
+    def on_epoch_end(self, epoch, **kwargs: Any) -> None:
+        "Stop the training if necessary."
+        map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.train_rf_dl)
+        print(f'Epoch {epoch}: map5 = {map5}')
 
 
 @dataclass
@@ -502,32 +542,4 @@ def gen_class_reference(ds):
     return class_1_dict
 
 
-class SiameseValidateCallback(LearnerCallback):
-    "A `Callback` to validate SiameseNet."
 
-    def __init__(self, learn):
-        super().__init__(learn)
-#        class_1_dict = gen_class_reference(self.learn.data.train)
-#        self.class_dl = DataLoader(
-#            Class1Dataset(self.learn.data.train, class_1_dict),
-#            batch_size=self.learn.data.valid_dl.batch_size,
-#            shuffle=False,
-#            drop_last=False,
-#            num_workers=self.learn.data.valid_dl.dl_workers
-#        )
-
-    #def on_epoch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-    def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-        sim_matrix = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.train_rf_dl)
-        #exit()
-
-        "Test if `last_loss` is NaN and interrupts training."
-        if self.stop: return True  # to skip validation after stopping during traning
-        if torch.isnan(last_loss):
-            print(f'Epoch/Batch ({epoch}/{num_batch}): Invalid loss, terminating training.')
-            self.stop = True
-            return True
-
-    def on_epoch_end(self, **kwargs: Any) -> None:
-        "Stop the training if necessary."
-        return self.stop
