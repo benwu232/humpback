@@ -12,6 +12,27 @@ from fastai.callbacks.hooks import num_features_model, model_sizes
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 
+train_list_dbg = ['00050a15a.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '0d5777fc2.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '6662f0d1c.jpg']
+val_list_dbg = ['fffde072b.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'cd650e905.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', 'a8d5237c0.jpg']
+
+def map_per_image(label, predictions):
+    """Computes the precision score of one image.
+
+    Parameters
+    ----------
+    label : string
+            The true label of the image
+    predictions : list
+            A list of predicted elements (order does matter, 5 predictions allowed per image)
+
+    Returns
+    -------
+    score : double
+    """
+    try:
+        return 1 / (predictions[:5].index(label) + 1)
+    except ValueError:
+        return 0.0
 
 # https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/average_precision.py
 def apk(actual, predicted, k=10):
@@ -388,49 +409,39 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         return embs
 
 
-def siamese_validate(val_dl, model, class_dl, batch_size=128, dl_workers=6):
+def siamese_validate(val_dl, model, train_rf_dl):
     model.eval()
+    batch_size = val_dl.batch_size
+    dl_workers = val_dl.num_workers
     with torch.no_grad():
         # calculate embeddings of all validation_set
         val_embs, targets = ds_siamese_emb(val_dl, model, ds_with_target=True)
         val_emb_tensor = torch.cat(val_embs)
-        target_tensor = torch.cat(targets)
-        print(val_emb_tensor.shape, target_tensor.shape)
-
-        val_embs = TensorDataset(val_emb_tensor)
-        val_dl = DataLoader(
-            val_embs,
-            batch_size=batch_size,
-            shuffle=False,
-            drop_last=False,
-            # collate_fn=siamese_collate,
-            num_workers=dl_workers
-        )
+        val_target_tensor = torch.cat(targets)
+        print(val_emb_tensor.shape, val_target_tensor.shape)
 
         # calculate embeddings of all classes except new_whale
-        class_embs = ds_siamese_emb(class_dl, model, ds_with_target=False)
-        class_embs = SimpleDataset(class_embs)
-        class_dl = DataLoader(
-            class_embs,
-            batch_size=batch_size,
-            shuffle=False,
-            drop_last=False,
-            # collate_fn=siamese_collate,
-            num_workers=dl_workers
-        )
+        train_rf_embs, rf_targets = ds_siamese_emb(train_rf_dl, model, ds_with_target=True)
+        train_rf_emb_tensor = torch.cat(train_rf_embs)
+        rf_target_tensor = torch.cat(rf_targets)
 
-        # calculate similarity probs between val_embs and class_embs
+        # calculate similarity probs between val_embs and train_rf_embs
         similarities = []
-        for k, val_emb in enumerate(val_embs):
+        for k, val_emb in enumerate(val_emb_tensor):
             similarity_list = []
-            val_emb_batch = torch.expand(batch_size, val_emb.shape[-1])
-            for class_emb_batch in class_dl:
-                similarity_list.append(model.cal_similarity(val_emb_batch, class_emb_batch))
-            similarities.append(torch.cat(similarity_list))
-        sim_matrix = torch.cat(similarities)
-        sim_sorted, _ = sim_matrix.sort()
+            for rf_emb_batch in train_rf_embs:
+                shape = rf_emb_batch.shape
+                val_emb_batch = val_emb.expand(shape[0], shape[1])
+                similarity = model.cal_similarity(val_emb_batch, rf_emb_batch)
+                similarity_list.append(similarity)
+            similarities.append(torch.cat(similarity_list).view(-1))
+        sim_matrix = torch.cat(similarities).view(len(val_emb_tensor), -1)
+        #sim_matrix, sim_idxes = sim_matrix.sort(dim=1, descending=True)
 
-        # insert new_whale
+        # todo:insert new_whale
+
+        # cal map5
+        map5(sim_matrix, val_emb_tensor)
 
 
 @dataclass
@@ -494,9 +505,8 @@ def gen_class_reference(ds):
 class SiameseValidateCallback(LearnerCallback):
     "A `Callback` to validate SiameseNet."
 
-    def __init__(self, learn, class_dl):
+    def __init__(self, learn):
         super().__init__(learn)
-        self.class_dl = class_dl
 #        class_1_dict = gen_class_reference(self.learn.data.train)
 #        self.class_dl = DataLoader(
 #            Class1Dataset(self.learn.data.train, class_1_dict),
@@ -506,9 +516,10 @@ class SiameseValidateCallback(LearnerCallback):
 #            num_workers=self.learn.data.valid_dl.dl_workers
 #        )
 
+    #def on_epoch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
     def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-        sim_matrix = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.class_dl, batch_size=128,
-                                      dl_workers=6)
+        sim_matrix = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.train_rf_dl)
+        #exit()
 
         "Test if `last_loss` is NaN and interrupts training."
         if self.stop: return True  # to skip validation after stopping during traning

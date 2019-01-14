@@ -3,20 +3,35 @@ from utils import *
 from fastai.callbacks import *
 
 #some parameters
+debug = 1
 arch = models.resnet18
 im_size = 224
-batch_size = 64
-dl_workers = 6
+if debug == 1:
+    train_batch_size = 2
+    val_batch_size = 2
+    dl_workers = 0
+else:
+    train_batch_size = 64
+    val_batch_size = 128
+    dl_workers = 6
 seed = 1
 
 root_path = '../input/'
-train_path = '../input/train/'
-test_path = '../input/test/'
+if debug:
+    train_path = '../input/train1/'
+    test_path = '../input/test1/'
+else:
+    train_path = '../input/train/'
+    test_path = '../input/test/'
 
 df0 = pd.read_csv('../input/train.csv')
 df_new = df0[df0.Id == 'new_whale']
 df_known = df0[df0.Id != 'new_whale']
-train_list, val_list = split_whale_set(df0, nth_fold=0, new_whale_method=1, seed=1)
+if debug:
+    train_list = train_list_dbg
+    val_list = val_list_dbg
+else:
+    train_list, val_list = split_whale_set(df0, nth_fold=0, new_whale_method=1, seed=1)
 print(len(train_list), len(val_list))
 
 im_count = df0[df0.Id != 'new_whale'].Id.value_counts()
@@ -28,6 +43,7 @@ fn2label = {row[1].Image: row[1].Id for row in df0.iterrows()}
 class_dict = make_whale_class_dict(df0)
 file_lut = df0.set_index('Image').to_dict()
 
+im_tfms = get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2)
 data = (
     ImageItemList
         # .from_df(df_known, 'data/train', cols=['Image'])
@@ -38,56 +54,43 @@ data = (
         # .random_split_by_pct(seed=SEED)
         .label_from_func(lambda path: fn2label[path2fn(str(path))])
         .add_test(ImageItemList.from_folder(test_path))
-        .transform(get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2), size=im_size,
-                   resize_method=ResizeMethod.SQUISH)
+        .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
         #.databunch(bs=BS, num_workers=NUM_WORKERS, path=root_path)
         #.normalize(imagenet_stats)
 )
 
 train_dl = DataLoader(
     SiameseDataset(data.train),
-    batch_size=batch_size,
+    batch_size=train_batch_size,
     shuffle=True,
     #collate_fn=siamese_collate,
     num_workers=dl_workers
 )
 
-#valid_dl = DataLoader(
-#    SiameseDataset(data.valid),
-#    batch_size=batch_size,
-#    shuffle=False,
-#    drop_last=False,
-#    #collate_fn=siamese_collate,
-#    num_workers=dl_workers
-#)
-
 #v = SimpleDataset(data.valid)
 valid_dl = DataLoader(
     SimpleDataset(data.valid),
-    batch_size=batch_size,
+    batch_size=val_batch_size,
     shuffle=False,
     drop_last=False,
     num_workers=dl_workers
 )
 
-class_1_dict = gen_class_reference(data.train)
-class_dl = DataLoader(
-    Class1Dataset(data.train, class_1_dict),
-    batch_size=batch_size,
+test_dl = DataLoader(
+    SimpleDataset(data.test),
+    batch_size=val_batch_size,
     shuffle=False,
     drop_last=False,
-    collate_fn=data_collate,
     num_workers=dl_workers
 )
 
-class_dl = DataLoaderVal(class_dl, device, collate_fn=data_collate, tfms=)
-
-.transform(get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2), size=im_size,
-           resize_method=ResizeMethod.SQUISH)
-for batch in class_dl:
-    print(len(batch), (batch[0].shape))
-    break
-exit()
+train_dl0 = DataLoader(
+    SimpleDataset(data.train),
+    batch_size=train_batch_size,
+    shuffle=False,
+    #collate_fn=siamese_collate,
+    num_workers=dl_workers
+)
 
 
 data_bunch = ImageDataBunch(train_dl, valid_dl, collate_fn=siamese_collate)
@@ -95,6 +98,8 @@ data_bunch.train_dl = DataLoaderTrain(train_dl, device, None, siamese_collate)
 #data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
 data_bunch.valid_dl = DataLoaderVal(valid_dl, device, collate_fn=data_collate)
 #data_bunch.valid_dl = DeviceDataLoader(valid_dl, device, collate_fn=torch.utils.data.dataloader.default_collate)
+data_bunch.test_dl = DataLoaderVal(test_dl, device, collate_fn=data_collate)
+data_bunch.train_rf_dl = DataLoaderVal(train_dl0, device, collate_fn=data_collate)
 data_bunch.add_tfm(normalize_batch)
 #data_bunch.valid_dl = None
 
@@ -113,7 +118,7 @@ learn = LearnerEx(data_bunch,
                 )
 
 cb_save_model = SaveModelCallback(learn, every="epoch", name=f"siamese")
-cb_siamese_validate = SiameseValidateCallback(learn, class_dl)
+cb_siamese_validate = SiameseValidateCallback(learn)
 cbs = [cb_save_model, cb_siamese_validate]
 
 learn.fit_one_cycle(2, callbacks=cbs)
