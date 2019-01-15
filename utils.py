@@ -210,11 +210,20 @@ class Class1Dataset(SimpleDataset):
 class DataLoaderTrain(DeviceDataLoader):
     def __post_init__(self):
         super().__post_init__()
+        #self.mean, self.std = torch.tensor(imagenet_stats)
+        self.stats = tensor(imagenet_stats).to(device)
 
     def proc_batch(self, b):
         data = {}
         for name in b[0]:
-            data[name] = b[0][name].to(device)
+            if name == 'pos_valid_masks':
+                data[name] = torch.tensor(b[0][name]).to(device)
+                continue
+            data[name] = []
+            for im in b[0][name]:
+                data[name].append(im.apply_tfms(listify(self.tfms)).data)
+            #data[name] = normalize(torch.stack(data[name]), self.mean, self.std).to(device)
+            data[name] = normalize(torch.stack(data[name]).to(device), *self.stats)
         target = b[1].to(device)
         return data, target
 
@@ -222,14 +231,33 @@ class DataLoaderTrain(DeviceDataLoader):
 class DataLoaderVal(DeviceDataLoader):
     def __post_init__(self):
         super().__post_init__()
+        self.stats = tensor(imagenet_stats).to(device)
 
     def proc_batch(self, b):
         if len(b) == 2:
-            data = b[0].to(device)
+            data = normalize(b[0].to(device), *self.stats)
             target = b[1].to(device)
             return data, target
         else:
-            return b.to(device)
+            data = normalize(b.to(device), *self.stats)
+            return data
+
+    def proc_batch1(self, b):
+        if len(b) == 2:
+            data0 = b[0]
+            target = b[1].to(device)
+        else:
+            data0 = b
+
+        data = []
+        for im in data0:
+            data.append(im.apply_tfms(listify(self.tfms)).data)
+        data = normalize(torch.stack(data).to(device), *self.stats)
+
+        if len(b) == 2:
+           return data, target
+        else:
+            return data
 
 def make_id_dict1(class_dict):
     id_dict = {}
@@ -314,7 +342,7 @@ class SiameseDataset(torch.utils.data.Dataset):
         return idx2
 
 
-def siamese_collate(items):
+def siamese_collate1(items):
     anchor_list = []
     pos_list = []
     neg_list = []
@@ -338,6 +366,28 @@ def siamese_collate(items):
     batch['pos_ims'] = torch.tensor(np.stack(pos_list))
     batch['neg_ims'] = torch.tensor(np.stack(neg_list))
     batch['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks))
+    batch_len = len(batch['anchors'])
+    target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
+    return batch, target
+
+
+def siamese_collate(items):
+    anchor_list = []
+    pos_list = []
+    neg_list = []
+    pos_valid_masks = []
+
+    for anchor, pos, neg, mask in items:
+        anchor_list.append(anchor)
+        pos_list.append(pos)
+        neg_list.append(neg)
+        pos_valid_masks.append(mask)
+
+    batch = {}
+    batch['anchors'] = anchor_list
+    batch['pos_ims'] = pos_list
+    batch['neg_ims'] = neg_list
+    batch['pos_valid_masks'] = np.stack(pos_valid_masks)
     batch_len = len(batch['anchors'])
     target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
     return batch, target

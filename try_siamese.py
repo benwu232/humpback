@@ -2,9 +2,11 @@
 from utils import *
 from fastai.callbacks import *
 
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 #some parameters
-debug = 1
-enable_lr_find = 1
+debug = 0
+enable_lr_find = 0
 
 arch = models.resnet18
 im_size = 224
@@ -26,8 +28,8 @@ if debug:
     train_path = '../input/train1_224/'
     test_path = '../input/test1_224/'
 else:
-    train_path = '../input/train/'
-    test_path = '../input/test/'
+    train_path = '../input/train_224/'
+    test_path = '../input/test_224/'
 
 df0 = pd.read_csv('../input/train.csv')
 df_new = df0[df0.Id == 'new_whale']
@@ -106,12 +108,16 @@ data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data
 #data_bunch.valid_dl = DeviceDataLoader(valid_dl, device, collate_fn=torch.utils.data.dataloader.default_collate)
 data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
 data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_collate)
-data_bunch.add_tfm(normalize_batch)
+#data_bunch.add_tfm(normalize_batch)
 #data_bunch.valid_dl = None
 
-#for train_batch, target in data_bunch.train_dl:
-#    print(len(train_batch), len(train_batch[0]))
+#for batch in data_bunch.train_dl:
+#    print(len(batch))
 #    break
+#for batch in data_bunch.fix_dl:
+#    print(len(batch))
+#    break
+#
 #exit()
 
 siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, norm=dist_norm)
@@ -136,7 +142,7 @@ if enable_lr_find:
     learn.recorder.plot()
     plt.savefig('lr_find.png')
 
-max_lr = 1e-4
+max_lr = 3e-4
 #lrs = [max_lr/100, max_lr/10, max_lr]
 #learn.fit_one_cycle(300, lrs)
 learn.fit_one_cycle(300, max_lr, callbacks=cbs)
