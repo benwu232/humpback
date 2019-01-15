@@ -160,6 +160,19 @@ def make_whale_class_dict(df):
     return whale_class_dict
 
 
+class ImageItemListEx(ImageItemList):
+    def __init__(self, *args, convert_mode='RGB', **kwargs):
+        super().__init__(*args, convert_mode=convert_mode, **kwargs)
+
+    def transform(self, tfms:Optional[Tuple[TfmList,TfmList]]=(None,None), **kwargs):
+        "Set `tfms` to be applied to the xs of the train and validation set."
+        if not tfms: return self
+        self.train.transform(tfms[0], **kwargs)
+        self.valid.transform(tfms[1], **kwargs)
+        if self.test: self.test.transform(tfms[1], **kwargs)
+        return self
+
+
 class SimpleDataset(Dataset):
     'Characterizes a dataset for PyTorch'
 
@@ -480,7 +493,7 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
 
     def on_epoch_end(self, epoch, **kwargs: Any) -> None:
         "Stop the training if necessary."
-        map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.train_rf_dl)
+        map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl)
         print(f'Epoch {epoch}: map5 = {map5}')
 
 

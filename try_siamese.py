@@ -3,7 +3,7 @@ from utils import *
 from fastai.callbacks import *
 
 #some parameters
-debug = 0
+debug = 1
 enable_lr_find = 1
 
 arch = models.resnet18
@@ -23,8 +23,8 @@ dist_norm = 1
 
 root_path = '../input/'
 if debug:
-    train_path = '../input/train1/'
-    test_path = '../input/test1/'
+    train_path = '../input/train1_224/'
+    test_path = '../input/test1_224/'
 else:
     train_path = '../input/train/'
     test_path = '../input/test/'
@@ -59,7 +59,8 @@ data = (
         # .random_split_by_pct(seed=SEED)
         .label_from_func(lambda path: fn2label[path2fn(str(path))])
         .add_test(ImageItemList.from_folder(test_path))
-        .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
+        #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
+        #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
         #.databunch(bs=BS, num_workers=NUM_WORKERS, path=root_path)
         #.normalize(imagenet_stats)
 )
@@ -91,20 +92,20 @@ test_dl = DataLoader(
 
 train_dl0 = DataLoader(
     SimpleDataset(data.train),
-    batch_size=train_batch_size,
+    batch_size=val_batch_size,
     shuffle=False,
     #collate_fn=siamese_collate,
     num_workers=dl_workers
 )
 
 
-data_bunch = ImageDataBunch(train_dl, valid_dl, collate_fn=siamese_collate)
-data_bunch.train_dl = DataLoaderTrain(train_dl, device, None, siamese_collate)
+data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=train_dl0, collate_fn=siamese_collate)
+data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=siamese_collate)
 #data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
-data_bunch.valid_dl = DataLoaderVal(valid_dl, device, collate_fn=data_collate)
+data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
 #data_bunch.valid_dl = DeviceDataLoader(valid_dl, device, collate_fn=torch.utils.data.dataloader.default_collate)
-data_bunch.test_dl = DataLoaderVal(test_dl, device, collate_fn=data_collate)
-data_bunch.train_rf_dl = DataLoaderVal(train_dl0, device, collate_fn=data_collate)
+data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
+data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_collate)
 data_bunch.add_tfm(normalize_batch)
 #data_bunch.valid_dl = None
 
