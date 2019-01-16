@@ -36,7 +36,7 @@ def cal_mapk(pred_matrix:tensor, targets:tensor, k=5, average=True):
         if r:
             mapk[i] = 1 / (r[0] + 1)
     if average:
-        mapk = mapk.mean()
+        return mapk.mean()
     return mapk
 
 
@@ -228,8 +228,9 @@ class DataLoaderTrain(DeviceDataLoader):
 
             #data[name] = normalize(torch.stack(data[name]), self.mean, self.std).to(device)
             data[name] = normalize(torch.stack(data[name]).to(device), *self.stats)
-        target = b[1].to(device)
-        return data, target
+        target = b[1][0].to(device)
+        valid_mask = b[1][1].to(device)
+        return data, (target, valid_mask)
 
 
 class DataLoaderVal(DeviceDataLoader):
@@ -369,10 +370,11 @@ def siamese_collate1(items):
     batch['anchors'] = torch.tensor(np.stack(anchor_list))
     batch['pos_ims'] = torch.tensor(np.stack(pos_list))
     batch['neg_ims'] = torch.tensor(np.stack(neg_list))
-    batch['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks))
+    #batch['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks))
     batch_len = len(batch['anchors'])
     target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
-    return batch, target
+    valid_masks = torch.cat(torch.tensor(np.stack(pos_valid_masks), dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32))
+    return batch, (target, valid_masks)
 
 
 def siamese_collate(items):
@@ -391,10 +393,11 @@ def siamese_collate(items):
     batch['anchors'] = anchor_list
     batch['pos_ims'] = pos_list
     batch['neg_ims'] = neg_list
-    batch['pos_valid_masks'] = np.stack(pos_valid_masks)
+    #batch['pos_valid_masks'] = np.stack(pos_valid_masks)
     batch_len = len(batch['anchors'])
     target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
-    return batch, target
+    valid_mask = torch.cat((torch.tensor(np.stack(pos_valid_masks), dtype=torch.int32), torch.ones(batch_len, dtype=torch.int32)))
+    return batch, (target, valid_mask)
 
 
 def cnn_activations_count(model, width, height):
@@ -410,7 +413,7 @@ class SiameseNet(nn.Module):
         self.fc2 = nn.Linear(emb_len, 1)
         self.dist_normal = dist_norm
 
-    def cal_embedding(self, im):
+    def im2emb(self, im):
         x = self.cnn(im)
         x = self.flatten(x)
         x = self.fc1(x)
@@ -420,7 +423,7 @@ class SiameseNet(nn.Module):
         if self.dist_normal == 1:
             return torch.abs(emb1 - emb2)
         else:
-            return (emb1 - emb2) ** 2
+            return F.pairwise_distance(emb1, emb2, self.dist_normal)
 
     def emb2sim(self, emb1, emb2):
         "embedding to similarity"
@@ -431,14 +434,14 @@ class SiameseNet(nn.Module):
 
     def im2sim(self, im_a, im_b):
         "image to similarity"
-        emb_a = self.cal_embedding(im_a)
-        emb_b = self.cal_embedding(im_b)
+        emb_a = self.im2emb(im_a)
+        emb_b = self.im2emb(im_b)
         return self.emb2sim(emb_a, emb_b)
 
     def forward(self, batch):
-        anchor_emb = self.cal_embedding(batch['anchors'])
-        pos_emb = self.cal_embedding(batch['pos_ims'])
-        neg_emb = self.cal_embedding(batch['neg_ims'])
+        anchor_emb = self.im2emb(batch['anchors'])
+        pos_emb = self.im2emb(batch['pos_ims'])
+        neg_emb = self.im2emb(batch['neg_ims'])
 
         pos_dist = self.cal_distance(anchor_emb, pos_emb)
         neg_dist = self.cal_distance(anchor_emb, neg_emb)
@@ -457,6 +460,13 @@ class SiameseNet(nn.Module):
     def flatten(self, x):
         return x.reshape(x.shape[0], -1)
 
+def contrasive_loss(out, targets, valid_mask):
+    #todo
+    pass
+#loss_contrastive = torch.mean(
+# (1-label)*torch.pow(euclidean_distance, 2) +
+# (label)*torch.pow(torch.clamp(self.margin-euclidean_distance, min=0.0),
+# 2))
 
 def normalize_batch(batch):
     stat_tensors = [torch.tensor(l).to(device) for l in imagenet_stats]
@@ -469,12 +479,12 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         targets = []
         for k, (data, target) in enumerate(dl):
             #print(k)
-            embs.append(model.cal_embedding(data))
+            embs.append(model.im2emb(data))
             targets.append(target)
         return embs, targets
     else:
         for data in dl:
-            embs.append(model.cal_embedding(data))
+            embs.append(model.im2emb(data))
         return embs
 
 
@@ -544,8 +554,8 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
     #    print()
     #    return map5
 
-    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-    def on_epoch_end(self, epoch, **kwargs: Any) -> None:
+    def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    #def on_epoch_end(self, epoch, **kwargs: Any) -> None:
         "Stop the training if necessary."
         map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl)
         print(f'Epoch {epoch}: map5 = {map5}')

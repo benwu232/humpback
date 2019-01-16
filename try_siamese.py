@@ -1,16 +1,18 @@
 
 from utils import *
 from fastai.callbacks import *
+import torchvision
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #some parameters
-debug = 0
+debug = 1
 enable_lr_find = 0
 
 arch = models.resnet18
 im_size = 224
 if debug == 1:
+    #arch = torchvision.models.squeezenet1_1(pretrained=True)
     train_batch_size = 2
     val_batch_size = 2
     dl_workers = 0
@@ -128,7 +130,8 @@ siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, dist_nor
 learn = LearnerEx(data_bunch,
                 siamese,
                 enable_validate=False,
-                loss_func=BCEWithLogitsFlat(),
+                #loss_func=BCEWithLogitsFlat(),
+                loss_func=contrasive_loss,
                 #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                 )
 
