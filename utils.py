@@ -221,7 +221,11 @@ class DataLoaderTrain(DeviceDataLoader):
                 continue
             data[name] = []
             for im in b[0][name]:
-                data[name].append(im.apply_tfms(listify(self.tfms)).data)
+                #im.show()
+                transformed = im.apply_tfms(listify(self.tfms))
+                #transformed.show()
+                data[name].append(transformed.data)
+
             #data[name] = normalize(torch.stack(data[name]), self.mean, self.std).to(device)
             data[name] = normalize(torch.stack(data[name]).to(device), *self.stats)
         target = b[1].to(device)
@@ -399,43 +403,39 @@ def cnn_activations_count(model, width, height):
 
 
 class SiameseNet(nn.Module):
-    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, norm=1):
+    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, dist_norm=1):
         super().__init__()
         self.cnn = create_body(arch)
         self.fc1 = nn.Linear(cnn_activations_count(arch, width, height), emb_len)
         self.fc2 = nn.Linear(emb_len, 1)
-        self.dist_type = norm
+        self.dist_normal = dist_norm
 
     def cal_embedding(self, im):
         x = self.cnn(im)
-        x = self.process_features(x)
+        x = self.flatten(x)
         x = self.fc1(x)
-        emb = torch.sigmoid(x)
-        return emb
+        return x
 
     def cal_distance(self, emb1, emb2):
-        if self.dist_type == 1:
+        if self.dist_normal == 1:
             return torch.abs(emb1 - emb2)
         else:
             return (emb1 - emb2) ** 2
 
-    def classify(self, dist):
-        logits = self.fc2(dist)
-        return torch.sigmoid(logits)
-
-    def cal_similarity(self, emb1, emb2):
+    def emb2sim(self, emb1, emb2):
+        "embedding to similarity"
         dist = self.cal_distance(emb1, emb2)
-        prob = self.classify(dist)
-        return prob
+        logits = self.fc2(dist)
+        similarity = torch.sigmoid(logits)
+        return similarity
 
-    def forward_test(self, im_a, im_b):
+    def im2sim(self, im_a, im_b):
+        "image to similarity"
         emb_a = self.cal_embedding(im_a)
         emb_b = self.cal_embedding(im_b)
-        dist_v = self.cal_distance(emb_a, emb_b)
-        prob = torch.sigmoid(self.fc2(dist_v))
-        return prob
+        return self.emb2sim(emb_a, emb_b)
 
-    def forward_train(self, batch):
+    def forward(self, batch):
         anchor_emb = self.cal_embedding(batch['anchors'])
         pos_emb = self.cal_embedding(batch['pos_ims'])
         neg_emb = self.cal_embedding(batch['neg_ims'])
@@ -448,13 +448,13 @@ class SiameseNet(nn.Module):
         # return pos_logits, neg_logits, pos_dist, neg_dist
         return torch.cat((pos_logits, neg_logits))
 
-    def forward(self, batch):
+    def forward1(self, batch):
         if self.training:
             return self.forward_train(batch)
         else:
-            return self.forward_test(batch)
+            return self.im2sim(batch)
 
-    def process_features(self, x):
+    def flatten(self, x):
         return x.reshape(x.shape[0], -1)
 
 
@@ -478,7 +478,7 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         return embs
 
 
-def siamese_validate(val_dl, model, train_rf_dl):
+def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000):
     model.eval()
     with torch.no_grad():
         # calculate embeddings of all validation_set
@@ -489,17 +489,20 @@ def siamese_validate(val_dl, model, train_rf_dl):
 
         # calculate embeddings of all classes except new_whale
         train_rf_embs, rf_targets = ds_siamese_emb(train_rf_dl, model, ds_with_target=True)
-        train_rf_emb_tensor = torch.cat(train_rf_embs)
+        rf_emb_tensor = torch.cat(train_rf_embs)
         rf_target_tensor = torch.cat(rf_targets)
 
         # calculate similarity probs between val_embs and train_rf_embs
         similarities = []
+        rf_len = len(rf_target_tensor)
         for k, val_emb in enumerate(val_emb_tensor):
             similarity_list = []
-            for rf_emb_batch in train_rf_embs:
+            for k in range(0, rf_len, sim_batch_len):
+                rf_emb_batch = rf_emb_tensor[k:k+sim_batch_len]
+            #for rf_emb_batch in train_rf_embs:
                 shape = rf_emb_batch.shape
                 val_emb_batch = val_emb.expand(shape[0], shape[1])
-                similarity = model.cal_similarity(val_emb_batch, rf_emb_batch)
+                similarity = model.emb2sim(val_emb_batch, rf_emb_batch)
                 similarity_list.append(similarity)
             similarities.append(torch.cat(similarity_list).view(-1))
         sim_matrix = torch.cat(similarities).view(len(val_emb_tensor), -1)
@@ -541,6 +544,7 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
     #    print()
     #    return map5
 
+    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
     def on_epoch_end(self, epoch, **kwargs: Any) -> None:
         "Stop the training if necessary."
         map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl)

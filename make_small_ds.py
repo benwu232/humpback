@@ -2,10 +2,12 @@
 from utils import *
 from fastai.callbacks import *
 
+categories = 200
+
 src_train_dir = '../input/train/'
-dst_train_dir = '../input/train1/'
+dst_train_dir = '../input/train2/'
 src_test_dir = '../input/test/'
-dst_test_dir = '../input/test1/'
+dst_test_dir = '../input/test2/'
 
 os.makedirs(dst_train_dir, exist_ok=True)
 os.makedirs(dst_test_dir, exist_ok=True)
@@ -26,7 +28,7 @@ for k, (name, group) in enumerate(df.groupby('Id')):
     else:
         train_list.append(images[0])
 
-    if k == 20:
+    if k == categories:
         break
 
 for f in train_list + val_list:

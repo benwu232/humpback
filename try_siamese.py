@@ -24,9 +24,12 @@ emb_len = 128
 dist_norm = 1
 
 root_path = '../input/'
-if debug:
+if debug == 1:
     train_path = '../input/train1_224/'
     test_path = '../input/test1_224/'
+elif debug == 2:
+    train_path = '../input/train2_224/'
+    test_path = '../input/test2_224/'
 else:
     train_path = '../input/train_224/'
     test_path = '../input/test_224/'
@@ -120,13 +123,13 @@ data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_
 #
 #exit()
 
-siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, norm=dist_norm)
+siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, dist_norm=dist_norm)
 
 learn = LearnerEx(data_bunch,
                 siamese,
                 enable_validate=False,
                 loss_func=BCEWithLogitsFlat(),
-                metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
+                #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                 )
 
 cb_save_model = SaveModelCallback(learn, every="epoch", name=f"siamese")
