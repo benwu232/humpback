@@ -23,7 +23,7 @@ else:
 seed = 1
 
 emb_len = 128
-dist_norm = 1
+diff_method = 1
 
 root_path = '../input/'
 if debug == 1:
@@ -125,7 +125,7 @@ data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_
 #
 #exit()
 
-siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, dist_norm=dist_norm)
+siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
 
 learn = LearnerEx(data_bunch,
                 siamese,

@@ -406,59 +406,75 @@ def cnn_activations_count(model, width, height):
 
 
 class SiameseNet(nn.Module):
-    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, dist_norm=1):
+    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, diff_method=1):
         super().__init__()
         self.cnn = create_body(arch)
         self.fc1 = nn.Linear(cnn_activations_count(arch, width, height), emb_len)
         self.fc2 = nn.Linear(emb_len, 1)
-        self.dist_normal = dist_norm
+        self.dropout = nn.Dropout(0.3)
+        self.diff_method = diff_method
+        if self.diff_method == 1:
+            self.diff_vec = self.diff_vec1
+        else:
+            self.diff_vec = self.diff_vec2
 
     def im2emb(self, im):
         x = self.cnn(im)
         x = self.flatten(x)
         x = self.fc1(x)
+        x = self.dropout(x)
         return x
 
-    def cal_distance(self, emb1, emb2):
-        if self.dist_normal == 1:
-            return torch.abs(emb1 - emb2)
-        else:
-            return F.pairwise_distance(emb1, emb2, self.dist_normal)
+    def diff_vec1(self, emb1, emb2):
+        return torch.abs(emb1 - emb2)
 
-    def emb2sim(self, emb1, emb2):
-        "embedding to similarity"
-        dist = self.cal_distance(emb1, emb2)
-        logits = self.fc2(dist)
-        similarity = torch.sigmoid(logits)
-        return similarity
+    def diff_vec2(self, emb1, emb2):
+        return ((emb1 - emb2) ** 2) / (emb1 + emb2)
 
-    def im2sim(self, im_a, im_b):
-        "image to similarity"
-        emb_a = self.im2emb(im_a)
-        emb_b = self.im2emb(im_b)
-        return self.emb2sim(emb_a, emb_b)
+    def similarity(self, diff):
+        x = self.dropout(diff)
+        logits = self.fc2(x)
+        return torch.sigmoid(logits)
+
+    def distance(self, emb1, emb2):
+        return F.pairwise_distance(emb1, emb2)
+
+#    def emb2sim(self, emb1, emb2):
+#        "embedding to similarity"
+#        dist = self.distance(emb1, emb2)
+#        logits = self.fc2(dist)
+#        similarity = torch.sigmoid(logits)
+#        return similarity
+#
+#    def im2sim(self, im_a, im_b):
+#        "image to similarity"
+#        emb_a = self.im2emb(im_a)
+#        emb_b = self.im2emb(im_b)
+#        return self.emb2sim(emb_a, emb_b)
 
     def forward(self, batch):
         anchor_emb = self.im2emb(batch['anchors'])
         pos_emb = self.im2emb(batch['pos_ims'])
         neg_emb = self.im2emb(batch['neg_ims'])
 
-        pos_dist = self.cal_distance(anchor_emb, pos_emb)
-        neg_dist = self.cal_distance(anchor_emb, neg_emb)
+        pos_dist = self.distance(anchor_emb, pos_emb)
+        neg_dist = self.distance(anchor_emb, neg_emb)
 
-        pos_logits = self.fc2(pos_dist)
-        neg_logits = self.fc2(neg_dist)
-        # return pos_logits, neg_logits, pos_dist, neg_dist
-        return torch.cat((pos_logits, neg_logits))
+        pos_diff = self.diff_vec(anchor_emb, pos_emb)
+        pos_similarity = self.similarity(pos_diff)
+        neg_diff = self.diff_vec(anchor_emb, neg_emb)
+        neg_similarity = self.similarity(neg_diff)
+
+        return pos_dist, pos_similarity, neg_dist, neg_similarity
 
     def forward1(self, batch):
-        if self.training:
-            return self.forward_train(batch)
-        else:
-            return self.im2sim(batch)
+        emb1 = self.im2emb(batch['im1'])
+        emb2 = self.im2emb(batch['im2'])
+        dist = self.distance(emb1, emb2)
+        diff = self.diff_vec(emb1, emb2)
+        similarity = self.similarity(diff)
+        return dist, similarity
 
-    def flatten(self, x):
-        return x.reshape(x.shape[0], -1)
 
 def contrasive_loss(out, targets, valid_mask):
     #todo
