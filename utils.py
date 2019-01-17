@@ -540,11 +540,11 @@ def stat_distance(dist_matrix, row_labels, col_labels, mask_labels=[], cut_ratio
 
     #find pos-max and neg-min
     dist_pos = dist_matrix[pos_mask > 0].sort()[0]
-    cut_len = len(dist_pos) // cut_ratio
+    cut_len = max(len(dist_pos) // cut_ratio, 10)
     dist_pos_max = dist_pos[-cut_len:].mean()
 
     dist_neg = dist_matrix[neg_mask > 0].sort()[0]
-    cut_len = len(dist_neg) // cut_ratio
+    cut_len = max(len(dist_neg) // cut_ratio, 10)
     dist_neg_min = dist_neg[:cut_len].mean()
     return dist_pos_max, dist_neg_min
 

@@ -6,8 +6,8 @@ import torchvision
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #some parameters
-debug = 1
-enable_lr_find = 0
+debug = 0
+enable_lr_find = 1
 
 arch = models.resnet18
 im_size = 224
