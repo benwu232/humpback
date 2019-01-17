@@ -13,8 +13,8 @@ from fastai.callbacks.hooks import num_features_model, model_sizes
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 
-train_list_dbg = ['00050a15a.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '0d5777fc2.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '6662f0d1c.jpg']
-val_list_dbg = ['fffde072b.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'cd650e905.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', 'a8d5237c0.jpg']
+train_list_dbg = ['00050a15a.jpg', '0005c1ef8.jpg', '0006e997e.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '30eac8c9f.jpg', '3c4235ad2.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '3161ae9b9.jpg', '399533efd.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '20e7c6af4.jpg', '23acb3957.jpg', '0d5777fc2.jpg', '2885ea466.jpg', '2d43e205a.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '47d9ad983.jpg', '645300669.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '2b95bba09.jpg', '6662f0d1c.jpg']
+val_list_dbg = ['ffd61cded.jpg', 'ffdddcc0f.jpg', 'fffde072b.jpg', 'c5658abf0.jpg', 'cc6c1a235.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'b758f5366.jpg', 'b9aefbbc8.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'bdb41dba8.jpg', 'bf1eba5c2.jpg', 'cd650e905.jpg', 'b3ba738d7.jpg', 'c48bb3cbf.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'b94450f8e.jpg', 'bd3f7ba02.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', '9ae676cb0.jpg', 'a8d5237c0.jpg']
 
 def find_new_whale_idx(classes):
     for k, cls in enumerate(classes):
@@ -30,8 +30,8 @@ def plot_lr(self):
         if not in_ipynb():
             plt.savefig(os.path.join(self.save_path, 'lr_plot.png'))
 
-def cal_mapk(pred_matrix:tensor, targets:tensor, k=5, average=True):
-    topk_probs, topk_idxes = pred_matrix.topk(k, dim=1)
+def cal_mapk(dist_matrix:tensor, targets:tensor, k=5, average=True):
+    topk_dists, topk_idxes = dist_matrix.topk(k, largest=False, dim=1)
     onehots = (topk_idxes == targets.view(-1, 1))
     onehots = onehots.detach().cpu().numpy()
 
@@ -525,13 +525,43 @@ def triplet_loss(dist_matrix, targets, mask_labels=[], margin=0.2):
     loss = torch.relu(dist_pos_max + margin - dist_neg_min)
     return loss
 
+def stat_distance(dist_matrix, row_labels, col_labels, mask_labels=[], cut_ratio=4):
+    assert len(row_labels) == dist_matrix.shape[0]
+    assert len(col_labels) == dist_matrix.shape[1]
+    #generate pos_mask. note: new_whale should not be involved in positive distance and should be in mask_labels
+    pos_mask = torch.zeros_like(dist_matrix)
+    neg_mask = torch.zeros_like(dist_matrix)
+    for j, t1 in enumerate(row_labels):
+        for k, t2 in enumerate(col_labels):
+            if t1 == t2 and t1 not in mask_labels:
+                pos_mask[j, k] = 1
+            elif t1 != t2:
+                neg_mask[j, k] = 1
+
+    #find pos-max and neg-min
+    dist_pos = dist_matrix[pos_mask > 0].sort()[0]
+    cut_len = len(dist_pos) // cut_ratio
+    dist_pos_max = dist_pos[-cut_len:].mean()
+
+    dist_neg = dist_matrix[neg_mask > 0].sort()[0]
+    cut_len = len(dist_neg) // cut_ratio
+    dist_neg_min = dist_neg[:cut_len].mean()
+    return dist_pos_max, dist_neg_min
+
 class TripletLoss(nn.Module):
-    def __init__(self, mask_labels=[], margin=0.2):
+    def __init__(self, mask_labels=[], margin=0.2, cut_ratio=4):
         super().__init__()
         self.mask_labels = mask_labels
         self.margin = margin
+        self.cut_ratio = cut_ratio
 
     def forward(self, dist_matrix, targets):
+        dist_pos_max, dist_neg_min = stat_distance(dist_matrix, targets, targets, self.mask_labels, self.cut_ratio)
+        #triplet loss
+        loss = torch.relu(dist_pos_max + self.margin - dist_neg_min)
+        return loss
+
+    def forward1(self, dist_matrix, targets):
         #generate pos_mask. note: new_whale should not be involved in positive distance and should be in mask_labels
         pos_mask = torch.zeros_like(dist_matrix)
         for j, t1 in enumerate(targets):
@@ -578,7 +608,7 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         return embs
 
 
-def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000):
+def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000, pos_mask=[]):
     model.eval()
     with torch.no_grad():
         # calculate embeddings of all validation_set
@@ -607,6 +637,10 @@ def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000):
             distances.append(torch.cat(distance_list).view(-1))
         distance_matrix = torch.cat(distances).view(len(val_emb_tensor), -1)
 
+        #find average max positive distance and average min negative distance
+        dist_pos_max, dist_neg_min = stat_distance(distance_matrix, val_target_tensor, rf_target_tensor, mask_labels=pos_mask)
+        print(f'dist_pos_max = {dist_pos_max}, dist_neg_min = {dist_neg_min}')
+
         # todo:insert new_whale
 
         # cal map5
@@ -620,7 +654,7 @@ def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000):
         #    if r:
         #        maps[k] = 1 / (r[0] + 1)
         map5 = cal_mapk(distance_matrix, val_target_tensor, k=5)
-        return map5
+        print(f'map5 = {map5}')
 
 
 class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
@@ -646,8 +680,9 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
     #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
     def on_epoch_end(self, epoch, **kwargs: Any) -> None:
         "Stop the training if necessary."
-        map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl)
-        print(f'Epoch {epoch}: map5 = {map5}')
+        print(f'Epoch {epoch} validation:')
+        new_whale_idx = find_new_whale_idx(self.learn.data.train_dl.ds.y.classes)
+        siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl, pos_mask=[new_whale_idx])
 
 
 @dataclass
