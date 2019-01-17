@@ -411,7 +411,7 @@ class SiameseNet(nn.Module):
         self.cnn = create_body(arch)
         self.fc1 = nn.Linear(cnn_activations_count(arch, width, height), emb_len)
         self.fc2 = nn.Linear(emb_len, 1)
-        self.dropout = nn.Dropout(0.3)
+        self.dropout = nn.Dropout(0.0)
         self.diff_method = diff_method
         if self.diff_method == 1:
             self.diff_vec = self.diff_vec1
@@ -452,7 +452,33 @@ class SiameseNet(nn.Module):
 #        emb_b = self.im2emb(im_b)
 #        return self.emb2sim(emb_a, emb_b)
 
+    #batch hard strategy
+    def forward_batch_hard(self, batch):
+        images = batch['images']
+        labels = batch['labels']
+        embeddings = self.im2emb(images)
+
+
+        anchor_emb = self.im2emb(batch['anchors'])
+        pos_emb = self.im2emb(batch['pos_ims'])
+        neg_emb = self.im2emb(batch['neg_ims'])
+
+        pos_dist = self.distance(anchor_emb, pos_emb)
+        neg_dist = self.distance(anchor_emb, neg_emb)
+
+        return pos_dist, neg_dist
+
     def forward(self, batch):
+        anchor_emb = self.im2emb(batch['anchors'])
+        pos_emb = self.im2emb(batch['pos_ims'])
+        neg_emb = self.im2emb(batch['neg_ims'])
+
+        pos_dist = self.distance(anchor_emb, pos_emb)
+        neg_dist = self.distance(anchor_emb, neg_emb)
+
+        return pos_dist, neg_dist
+
+    def forward2(self, batch):
         anchor_emb = self.im2emb(batch['anchors'])
         pos_emb = self.im2emb(batch['pos_ims'])
         neg_emb = self.im2emb(batch['neg_ims'])
