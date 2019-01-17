@@ -7,7 +7,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 #some parameters
 debug = 1
-enable_lr_find = 0
+enable_lr_find = 1
 
 arch = models.resnet18
 im_size = 224
@@ -73,7 +73,8 @@ data = (
 )
 
 train_dl = DataLoader(
-    SiameseDataset(data.train),
+    #SiameseDataset(data.train),
+    SimpleDataset(data.train),
     batch_size=train_batch_size,
     shuffle=True,
     #collate_fn=siamese_collate,
@@ -106,11 +107,10 @@ train_dl0 = DataLoader(
 )
 
 
-data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=train_dl0, collate_fn=siamese_collate)
-data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=siamese_collate)
-#data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
+data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=train_dl0, collate_fn=data_collate)
+#data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=siamese_collate)
+data_bunch.train_dl = DataLoaderVal(train_dl, device, tfms=im_tfms[0], collate_fn=data_collate)
 data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
-#data_bunch.valid_dl = DeviceDataLoader(valid_dl, device, collate_fn=torch.utils.data.dataloader.default_collate)
 data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
 data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_collate)
 #data_bunch.add_tfm(normalize_batch)
@@ -127,11 +127,15 @@ data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_
 
 siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
 
+# new_whale should not be involved in positive distance
+new_whale_idx = find_new_whale_idx(data.train.y.classes)
+triploss = TripletLoss(mask_labels=[new_whale_idx], margin=0.2)
+
 learn = LearnerEx(data_bunch,
                 siamese,
                 enable_validate=False,
                 #loss_func=BCEWithLogitsFlat(),
-                loss_func=contrasive_loss,
+                loss_func=triploss,
                 #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                 )
 

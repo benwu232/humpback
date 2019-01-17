@@ -16,6 +16,11 @@ device = torch.device("cuda" if USE_CUDA else "cpu")
 train_list_dbg = ['00050a15a.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '0d5777fc2.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '6662f0d1c.jpg']
 val_list_dbg = ['fffde072b.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'cd650e905.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', 'a8d5237c0.jpg']
 
+def find_new_whale_idx(classes):
+    for k, cls in enumerate(classes):
+        if cls == 'new_whale':
+            return k
+
 def plot_lr(self):
         if not in_ipynb():
             plt.switch_backend('agg')
@@ -417,6 +422,10 @@ class SiameseNet(nn.Module):
             self.diff_vec = self.diff_vec1
         else:
             self.diff_vec = self.diff_vec2
+        self.forward = self.forward_batch_hard
+
+    def flatten(self, x):
+        return x.reshape(x.shape[0], -1)
 
     def im2emb(self, im):
         x = self.cnn(im)
@@ -454,21 +463,16 @@ class SiameseNet(nn.Module):
 
     #batch hard strategy
     def forward_batch_hard(self, batch):
-        images = batch['images']
-        labels = batch['labels']
-        embeddings = self.im2emb(images)
+        embeddings = self.im2emb(batch)
+        dist_rows = []
+        for emb in embeddings:
+            row_emb = emb.expand(embeddings.shape)
+            dist = self.distance(row_emb, embeddings)
+            dist_rows.append(dist)
+        dist_matrix = torch.stack(dist_rows)
+        return dist_matrix
 
-
-        anchor_emb = self.im2emb(batch['anchors'])
-        pos_emb = self.im2emb(batch['pos_ims'])
-        neg_emb = self.im2emb(batch['neg_ims'])
-
-        pos_dist = self.distance(anchor_emb, pos_emb)
-        neg_dist = self.distance(anchor_emb, neg_emb)
-
-        return pos_dist, neg_dist
-
-    def forward(self, batch):
+    def forward3(self, batch):
         anchor_emb = self.im2emb(batch['anchors'])
         pos_emb = self.im2emb(batch['pos_ims'])
         neg_emb = self.im2emb(batch['neg_ims'])
@@ -500,6 +504,50 @@ class SiameseNet(nn.Module):
         diff = self.diff_vec(emb1, emb2)
         similarity = self.similarity(diff)
         return dist, similarity
+
+
+
+def triplet_loss(dist_matrix, targets, mask_labels=[], margin=0.2):
+    #generate pos_mask, todo: mask new_whale from pos-pos
+    pos_mask = torch.zeros_like(dist_matrix)
+    for j, t1 in enumerate(targets):
+        for k, t2 in enumerate(targets):
+            if t1 == t2 and t1 not in mask_labels:
+                pos_mask[j, k] = 1
+
+    #find pos-max and neg-min
+    dist_pos = dist_matrix * pos_mask
+    dist_pos_max = dist_pos.sort()[0][:, -1].mean()
+    dist_neg = dist_matrix * (1 - pos_mask)
+    dist_neg_min = dist_neg.sort()[0][:, 0].mean()
+
+    #triplet loss
+    loss = torch.relu(dist_pos_max + margin - dist_neg_min)
+    return loss
+
+class TripletLoss(nn.Module):
+    def __init__(self, mask_labels=[], margin=0.2):
+        super().__init__()
+        self.mask_labels = mask_labels
+        self.margin = margin
+
+    def forward(self, dist_matrix, targets):
+        #generate pos_mask. note: new_whale should not be involved in positive distance and should be in mask_labels
+        pos_mask = torch.zeros_like(dist_matrix)
+        for j, t1 in enumerate(targets):
+            for k, t2 in enumerate(targets):
+                if t1 == t2 and t1 not in self.mask_labels:
+                    pos_mask[j, k] = 1
+
+        #find pos-max and neg-min
+        dist_pos = dist_matrix * pos_mask
+        dist_pos_max = dist_pos.sort()[0][:, -1].mean()
+        dist_neg = dist_matrix * (1 - pos_mask)
+        dist_neg_min = dist_neg.sort()[0][:, 0].mean()
+
+        #triplet loss
+        loss = torch.relu(dist_pos_max + self.margin - dist_neg_min)
+        return loss
 
 
 def contrasive_loss(out, targets, valid_mask):
@@ -544,26 +592,25 @@ def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000):
         rf_emb_tensor = torch.cat(train_rf_embs)
         rf_target_tensor = torch.cat(rf_targets)
 
-        # calculate similarity probs between val_embs and train_rf_embs
-        similarities = []
+        # calculate distances between all val_embs and all train_rf_embs
+        distances = []
         rf_len = len(rf_target_tensor)
         for k, val_emb in enumerate(val_emb_tensor):
-            similarity_list = []
+            distance_list = []
+            #for rf_emb_batch in train_rf_embs:
             for k in range(0, rf_len, sim_batch_len):
                 rf_emb_batch = rf_emb_tensor[k:k+sim_batch_len]
-            #for rf_emb_batch in train_rf_embs:
                 shape = rf_emb_batch.shape
                 val_emb_batch = val_emb.expand(shape[0], shape[1])
-                similarity = model.emb2sim(val_emb_batch, rf_emb_batch)
-                similarity_list.append(similarity)
-            similarities.append(torch.cat(similarity_list).view(-1))
-        sim_matrix = torch.cat(similarities).view(len(val_emb_tensor), -1)
-        #sim_matrix, sim_idxes = sim_matrix.sort(dim=1, descending=True)
+                dists = model.distance(val_emb_batch, rf_emb_batch)
+                distance_list.append(dists)
+            distances.append(torch.cat(distance_list).view(-1))
+        distance_matrix = torch.cat(distances).view(len(val_emb_tensor), -1)
 
         # todo:insert new_whale
 
         # cal map5
-        #top5_probs, top5_idxes = sim_matrix.topk(5, dim=1)
+        #top5_probs, top5_idxes = distance_matrix.topk(5, dim=1)
         #onehots = (top5_idxes == val_target_tensor.view(-1, 1))
         #onehots = onehots.detach().cpu().numpy()
 
@@ -572,7 +619,7 @@ def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000):
         #    r = np.where(onehot == 1)[0]
         #    if r:
         #        maps[k] = 1 / (r[0] + 1)
-        map5 = cal_mapk(sim_matrix, val_target_tensor, k=5)
+        map5 = cal_mapk(distance_matrix, val_target_tensor, k=5)
         return map5
 
 
@@ -596,8 +643,8 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
     #    print()
     #    return map5
 
-    def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-    #def on_epoch_end(self, epoch, **kwargs: Any) -> None:
+    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    def on_epoch_end(self, epoch, **kwargs: Any) -> None:
         "Stop the training if necessary."
         map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl)
         print(f'Epoch {epoch}: map5 = {map5}')
