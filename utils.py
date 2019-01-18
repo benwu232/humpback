@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import pandas as pd
 import torch
+from copy import deepcopy
 
 import fastai
 from fastai.vision import *
@@ -20,6 +21,21 @@ def find_new_whale_idx(classes):
     for k, cls in enumerate(classes):
         if cls == 'new_whale':
             return k
+
+def gen_ref_ds(ds):
+    "Generate reference dataset from original dataset without new_whale"
+    ref_ds = deepcopy(ds)
+    del_idxes = []
+    for k, item in enumerate(ref_ds):
+        if item[1].obj != 'new_whale':
+            del_idxes.append(k)
+
+    for k in reversed(del_idxes):
+        del ref_ds.x[k]
+        del ref_ds.y[k]
+
+    return ref_ds
+
 
 def plot_lr(self):
         if not in_ipynb():
@@ -583,7 +599,7 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         return embs
 
 
-def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000, pos_mask=[]):
+def siamese_validate(val_dl, model, rf_dl, sim_batch_len=10000, pos_mask=[]):
     model.eval()
     with torch.no_grad():
         # calculate embeddings of all validation_set
@@ -593,16 +609,16 @@ def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000, pos_mask=[
         #print(val_emb_tensor.shape, val_target_tensor.shape)
 
         # calculate embeddings of all classes except new_whale
-        train_rf_embs, rf_targets = ds_siamese_emb(train_rf_dl, model, ds_with_target=True)
-        rf_emb_tensor = torch.cat(train_rf_embs)
+        rf_embs, rf_targets = ds_siamese_emb(rf_dl, model, ds_with_target=True)
+        rf_emb_tensor = torch.cat(rf_embs)
         rf_target_tensor = torch.cat(rf_targets)
 
-        # calculate distances between all val_embs and all train_rf_embs
+        # calculate distances between all val_embs and all rf_embs
         distances = []
         rf_len = len(rf_target_tensor)
         for k, val_emb in enumerate(val_emb_tensor):
             distance_list = []
-            #for rf_emb_batch in train_rf_embs:
+            #for rf_emb_batch in rf_embs:
             for k in range(0, rf_len, sim_batch_len):
                 rf_emb_batch = rf_emb_tensor[k:k+sim_batch_len]
                 shape = rf_emb_batch.shape
@@ -619,15 +635,6 @@ def siamese_validate(val_dl, model, train_rf_dl, sim_batch_len=10000, pos_mask=[
         # todo:insert new_whale
 
         # cal map5
-        #top5_probs, top5_idxes = distance_matrix.topk(5, dim=1)
-        #onehots = (top5_idxes == val_target_tensor.view(-1, 1))
-        #onehots = onehots.detach().cpu().numpy()
-
-        #maps = np.zeros(len(onehots))
-        #for k, onehot in enumerate(onehots):
-        #    r = np.where(onehot == 1)[0]
-        #    if r:
-        #        maps[k] = 1 / (r[0] + 1)
         map5 = cal_mapk(distance_matrix, val_target_tensor, k=5)
         print(f'map5 = {map5}')
 

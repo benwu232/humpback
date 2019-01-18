@@ -6,7 +6,7 @@ import torchvision
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #some parameters
-debug = 1
+debug = 0
 enable_lr_find = 1
 
 arch = models.resnet18
@@ -56,6 +56,7 @@ class_dict = make_whale_class_dict(df0)
 file_lut = df0.set_index('Image').to_dict()
 
 im_tfms = get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2)
+
 data = (
     ImageItemList
         # .from_df(df_known, 'data/train', cols=['Image'])
@@ -97,21 +98,47 @@ test_dl = DataLoader(
     num_workers=dl_workers
 )
 
-train_dl0 = DataLoader(
-    SimpleDataset(data.train),
-    batch_size=val_batch_size,
-    shuffle=False,
-    #collate_fn=siamese_collate,
-    num_workers=dl_workers
+data_ref = (
+    ImageItemList
+        .from_df(df_known, train_path, cols=['Image'])
+        #.from_folder(train_path)
+        # .split_by_idxs(train_item_list, val_item_list)
+        .split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
+        # .split_by_idx(val_list)
+        # .random_split_by_pct(seed=SEED)
+        .label_from_func(lambda path: fn2label[path2fn(str(path))])
+        #.add_test(ImageItemList.from_folder(test_path))
+        #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
+        #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
+        #.databunch(bs=BS, num_workers=NUM_WORKERS, path=root_path)
+        #.normalize(imagenet_stats)
 )
 
+#gen_ref_ds(data.train)
+if debug == 0:
+    ref_dl = DataLoader(
+        SimpleDataset(data_ref.train),
+        batch_size=val_batch_size,
+        shuffle=False,
+        #collate_fn=siamese_collate,
+        num_workers=dl_workers
+    )
+else:
+    ref_dl = DataLoader(
+        SimpleDataset(data.train),
+        batch_size=val_batch_size,
+        shuffle=False,
+        #collate_fn=siamese_collate,
+        num_workers=dl_workers
+    )
 
-data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=train_dl0, collate_fn=siamese_collate)
+
+data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl, collate_fn=siamese_collate)
 data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=siamese_collate)
 #data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
 data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
 data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
-data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_collate)
+data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_collate)
 #data_bunch.add_tfm(normalize_batch)
 #data_bunch.valid_dl = None
 
