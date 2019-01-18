@@ -38,7 +38,7 @@ def cal_mapk(dist_matrix:tensor, targets:tensor, k=5, average=True):
     mapk = np.zeros(len(onehots))
     for i, onehot in enumerate(onehots):
         r = np.where(onehot == 1)[0]
-        if r:
+        if len(r) > 0:
             mapk[i] = 1 / (r[0] + 1)
     if average:
         return mapk.mean()
