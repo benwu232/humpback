@@ -317,6 +317,7 @@ class SiameseDataset(torch.utils.data.Dataset):
         #self.id_dict = make_id_dict(self.whale_class_dict)
         self.class_idx_dict = make_class_idx_dict(ds)
         self.len = len(self.ds)
+        self.new_whale_idx = find_new_whale_idx(ds.y.classes)
 
     def __len__(self):
         return self.len
@@ -332,10 +333,10 @@ class SiameseDataset(torch.utils.data.Dataset):
         c = self.class_idx_dict[whale_class]
 
         # for 1-class or new_whale, there is no same
-        if len(c) == 1 or len(c) > 100:
-            return idx, 0  # 0 means no anchor-positive pair
+        if len(c) == 1 or whale_class == self.new_whale_idx:
+            return idx, 0  # 0 means anchor-positive pair is not valid
 
-        candidates = c[c != idx]
+        candidates = c[c != idx] #same label but not same image
         np.random.shuffle(candidates)
         return candidates[0], 1
 
@@ -350,36 +351,6 @@ class SiameseDataset(torch.utils.data.Dataset):
             if self.whale_class_dict[idx2] != whale_id:
                 break
         return idx2
-
-
-def siamese_collate1(items):
-    anchor_list = []
-    pos_list = []
-    neg_list = []
-    pos_valid_masks = []
-
-    for anchor, pos, neg, mask in items:
-        anchor_list.append(anchor.data)
-        pos_list.append(pos.data)
-        neg_list.append(neg.data)
-        pos_valid_masks.append(mask)
-
-    # batch = []
-    # batch.append(torch.tensor(np.stack(anchor_list)).to(device))
-    # batch.append(torch.tensor(np.stack(pos_list)).to(device))
-    # batch.append(torch.tensor(np.stack(neg_list)).to(device))
-    # batch.append(torch.tensor(np.stack(pos_valid_masks)).to(device))
-    # return batch, batch[-1] # just for (data, target) format
-
-    batch = {}
-    batch['anchors'] = torch.tensor(np.stack(anchor_list))
-    batch['pos_ims'] = torch.tensor(np.stack(pos_list))
-    batch['neg_ims'] = torch.tensor(np.stack(neg_list))
-    #batch['pos_valid_masks'] = torch.tensor(np.stack(pos_valid_masks))
-    batch_len = len(batch['anchors'])
-    target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
-    valid_masks = torch.cat(torch.tensor(np.stack(pos_valid_masks), dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32))
-    return batch, (target, valid_masks)
 
 
 def siamese_collate(items):
@@ -401,8 +372,8 @@ def siamese_collate(items):
     #batch['pos_valid_masks'] = np.stack(pos_valid_masks)
     batch_len = len(batch['anchors'])
     target = torch.cat((torch.ones(batch_len, dtype=torch.int32), torch.zeros(batch_len, dtype=torch.int32)))
-    valid_mask = torch.cat((torch.tensor(np.stack(pos_valid_masks), dtype=torch.int32), torch.ones(batch_len, dtype=torch.int32)))
-    return batch, (target, valid_mask)
+    pos_mask = torch.tensor(pos_valid_masks, dtype=torch.int32)
+    return batch, (target, pos_mask)
 
 
 def cnn_activations_count(model, width, height):
@@ -422,7 +393,7 @@ class SiameseNet(nn.Module):
             self.diff_vec = self.diff_vec1
         else:
             self.diff_vec = self.diff_vec2
-        self.forward = self.forward_batch_hard
+        self.forward = self.forward3
 
     def flatten(self, x):
         return x.reshape(x.shape[0], -1)
@@ -555,26 +526,30 @@ class TripletLoss(nn.Module):
         self.margin = margin
         self.cut_ratio = cut_ratio
 
-    def forward(self, dist_matrix, targets):
-        dist_pos_max, dist_neg_min = stat_distance(dist_matrix, targets, targets, self.mask_labels, self.cut_ratio)
+    def forward(self, distances, targets, pos_mask):
+        pos_dist = distances[0][pos_mask > 0].sort()[0]
+        neg_dist = distances[1].sort()[0]
+
+        neg_dist_min = neg_dist[:max(len(neg_dist)//self.cut_ratio, 8)].mean()
+        if len(pos_dist):
+            pos_dist_max = pos_dist[-max(len(pos_dist)//self.cut_ratio, 8):].mean()
+        else:
+            pos_dist_max = neg_dist_min - self.margin
+
         #triplet loss
-        loss = torch.relu(dist_pos_max + self.margin - dist_neg_min)
+        loss = torch.relu(pos_dist_max + self.margin - neg_dist_min)
         return loss
 
-    def forward1(self, dist_matrix, targets):
-        #generate pos_mask. note: new_whale should not be involved in positive distance and should be in mask_labels
-        pos_mask = torch.zeros_like(dist_matrix)
-        for j, t1 in enumerate(targets):
-            for k, t2 in enumerate(targets):
-                if t1 == t2 and t1 not in self.mask_labels:
-                    pos_mask[j, k] = 1
 
-        #find pos-max and neg-min
-        dist_pos = dist_matrix * pos_mask
-        dist_pos_max = dist_pos.sort()[0][:, -1].mean()
-        dist_neg = dist_matrix * (1 - pos_mask)
-        dist_neg_min = dist_neg.sort()[0][:, 0].mean()
+class TripletLoss1(nn.Module):
+    def __init__(self, mask_labels=[], margin=0.2, cut_ratio=4):
+        super().__init__()
+        self.mask_labels = mask_labels
+        self.margin = margin
+        self.cut_ratio = cut_ratio
 
+    def forward(self, dist_matrix, targets):
+        dist_pos_max, dist_neg_min = stat_distance(dist_matrix, targets, targets, self.mask_labels, self.cut_ratio)
         #triplet loss
         loss = torch.relu(dist_pos_max + self.margin - dist_neg_min)
         return loss

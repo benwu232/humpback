@@ -13,8 +13,8 @@ arch = models.resnet18
 im_size = 224
 if debug == 1:
     #arch = torchvision.models.squeezenet1_1(pretrained=True)
-    train_batch_size = 2
-    val_batch_size = 2
+    train_batch_size = 8
+    val_batch_size = 8
     dl_workers = 0
 else:
     train_batch_size = 64
@@ -73,8 +73,7 @@ data = (
 )
 
 train_dl = DataLoader(
-    #SiameseDataset(data.train),
-    SimpleDataset(data.train),
+    SiameseDataset(data.train),
     batch_size=train_batch_size,
     shuffle=True,
     #collate_fn=siamese_collate,
@@ -107,9 +106,9 @@ train_dl0 = DataLoader(
 )
 
 
-data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=train_dl0, collate_fn=data_collate)
-#data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=siamese_collate)
-data_bunch.train_dl = DataLoaderVal(train_dl, device, tfms=im_tfms[0], collate_fn=data_collate)
+data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=train_dl0, collate_fn=siamese_collate)
+data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=siamese_collate)
+#data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
 data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
 data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
 data_bunch.fix_dl = DataLoaderVal(train_dl0, device, tfms=None, collate_fn=data_collate)
@@ -129,7 +128,7 @@ siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_met
 
 # new_whale should not be involved in positive distance
 new_whale_idx = find_new_whale_idx(data.train.y.classes)
-triploss = TripletLoss(mask_labels=[new_whale_idx], margin=0.2)
+triploss = TripletLoss(mask_labels=[new_whale_idx], margin=2.0)
 
 learn = LearnerEx(data_bunch,
                 siamese,
