@@ -8,6 +8,8 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 #some parameters
 debug = 0
 enable_lr_find = 1
+now_str = now2str(format="%Y-%m-%d_%H-%M-%S")
+txlog = tx.SummaryWriter(f'../tblog/{now_str}')
 
 arch = models.resnet18
 im_size = 224
@@ -19,7 +21,7 @@ if debug == 1:
 else:
     train_batch_size = 64
     val_batch_size = 256
-    dl_workers = 6
+    dl_workers = 2
 seed = 1
 
 emb_len = 128
@@ -35,6 +37,7 @@ elif debug == 2:
 else:
     train_path = '../input/train_224/'
     test_path = '../input/test_224/'
+
 
 df0 = pd.read_csv('../input/train.csv')
 df_new = df0[df0.Id == 'new_whale']
@@ -74,7 +77,7 @@ data = (
 )
 
 train_dl = DataLoader(
-    SiameseDataset(data.train),
+    SiameseDsTriplet(data.train),
     batch_size=train_batch_size,
     shuffle=True,
     #collate_fn=siamese_collate,
@@ -113,6 +116,7 @@ data_ref = (
         #.databunch(bs=BS, num_workers=NUM_WORKERS, path=root_path)
         #.normalize(imagenet_stats)
 )
+print(len(data_ref.train), len(data_ref.valid))
 
 #gen_ref_ds(data.train)
 if debug == 0:
@@ -133,8 +137,8 @@ else:
     )
 
 
-data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl, collate_fn=siamese_collate)
-data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=siamese_collate)
+data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl, collate_fn=collate_siamese_triplet)
+data_bunch.train_dl = DataLoaderTrain(train_dl, device, tfms=im_tfms[0], collate_fn=collate_siamese_triplet)
 #data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
 data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
 data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
@@ -155,7 +159,7 @@ siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_met
 
 # new_whale should not be involved in positive distance
 new_whale_idx = find_new_whale_idx(data.train.y.classes)
-triploss = TripletLoss(mask_labels=[new_whale_idx], margin=2.0)
+triploss = TripletLoss(margin=0.2)
 
 learn = LearnerEx(data_bunch,
                 siamese,
@@ -166,10 +170,10 @@ learn = LearnerEx(data_bunch,
                 )
 
 cb_save_model = SaveModelCallback(learn, every="epoch", name=f"siamese")
-cb_siamese_validate = SiameseValidateCallback(learn)
+cb_siamese_validate = SiameseValidateCallback(learn, txlog)
 cbs = [cb_save_model, cb_siamese_validate]
 
-learn.fit_one_cycle(1)
+learn.fit_one_cycle(1, callbacks=cbs)
 learn.unfreeze()
 
 if enable_lr_find:
@@ -178,7 +182,7 @@ if enable_lr_find:
     learn.recorder.plot()
     plt.savefig('lr_find.png')
 
-max_lr = 3e-4
+max_lr = 3e-5
 #lrs = [max_lr/100, max_lr/10, max_lr]
 #learn.fit_one_cycle(300, lrs)
 learn.fit_one_cycle(300, max_lr, callbacks=cbs)

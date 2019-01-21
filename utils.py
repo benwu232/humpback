@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 import torch
 from copy import deepcopy
+import datetime as dt
 
 import fastai
 from fastai.vision import *
@@ -10,12 +11,18 @@ from fastai.basic_data import *
 from fastai.metrics import accuracy
 from fastai.basic_data import *
 from fastai.callbacks.hooks import num_features_model, model_sizes
+import torchvision
+import tensorboardX as tx
 
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 
 train_list_dbg = ['00050a15a.jpg', '0005c1ef8.jpg', '0006e997e.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '30eac8c9f.jpg', '3c4235ad2.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '3161ae9b9.jpg', '399533efd.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '20e7c6af4.jpg', '23acb3957.jpg', '0d5777fc2.jpg', '2885ea466.jpg', '2d43e205a.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '47d9ad983.jpg', '645300669.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '2b95bba09.jpg', '6662f0d1c.jpg']
 val_list_dbg = ['ffd61cded.jpg', 'ffdddcc0f.jpg', 'fffde072b.jpg', 'c5658abf0.jpg', 'cc6c1a235.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'b758f5366.jpg', 'b9aefbbc8.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'bdb41dba8.jpg', 'bf1eba5c2.jpg', 'cd650e905.jpg', 'b3ba738d7.jpg', 'c48bb3cbf.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'b94450f8e.jpg', 'bd3f7ba02.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', '9ae676cb0.jpg', 'a8d5237c0.jpg']
+
+def now2str(format="%Y-%m-%d_%H:%M:%S"):
+    #str_time = time.strftime("%Y-%b-%d-%H-%M-%S", time.localtime(time.time()))
+    return dt.datetime.now().strftime(format)
 
 def find_new_whale_idx(classes):
     for k, cls in enumerate(classes):
@@ -144,36 +151,6 @@ def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1):
     return train_list, val_list
 
 
-def split_whale_set1(df, nth_split=0, total_split=5, use_new_whale=True, seed=1):
-    np.random.seed(seed)
-    # list(df_known.groupby('Id'))
-    train_list = []
-    val_list = []
-    df_known = df[df.Id != 'new_whale']
-    for name, group in df_known.groupby('Id'):
-        # print(name, len(group), group.index, type(group))
-        # if name == 'w_b82d0eb':
-        #    print(name, df_known[df_known.Id==name])
-        group_num = len(group)
-        idxes = group.index.values
-        if group_num > 1:
-            np.random.shuffle(idxes)
-            # idxes = list(idxes)
-            span = max(1, group_num // total_split)
-            val_idxes = idxes[nth_split * span:(nth_split + 1) * span]
-            train_idxes = list(set(idxes) - set(val_idxes))
-            val_list.extend(val_idxes)
-            train_list.extend(train_idxes)
-        else:
-            train_list.extend(idxes)
-
-    if use_new_whale:
-        df_new = df[df.Id == 'new_whale']
-        train_list.extend(df_new.index.values)
-
-    return train_list, val_list
-
-
 def make_whale_class_dict(df):
     whale_class_dict = {}
     for name, group in df.groupby('Id'):
@@ -227,6 +204,26 @@ class Class1Dataset(SimpleDataset):
         return sample
 
 
+class DataLoaderTrain1(DeviceDataLoader):
+    def __post_init__(self):
+        super().__post_init__()
+        #self.mean, self.std = torch.tensor(imagenet_stats)
+        self.stats = tensor(imagenet_stats).to(device)
+
+    def proc_batch(self, b):
+        data = {}
+        for name in b[0]:
+            data[name] = []
+            for im in b[0][name]:
+                #im.show()
+                transformed = im.apply_tfms(listify(self.tfms))
+                #transformed.show()
+                normalized = torchvision.transforms.functional.normalize(transformed.data, self.stats[0], self.stats[1])
+                data[name].append(normalized)
+            data[name] = torch.stack(data[name]).to(device)
+        target = b[1].to(device)
+        return data, target
+
 
 class DataLoaderTrain(DeviceDataLoader):
     def __post_init__(self):
@@ -261,29 +258,18 @@ class DataLoaderVal(DeviceDataLoader):
 
     def proc_batch(self, b):
         if len(b) == 2:
-            data = normalize(b[0].to(device), *self.stats)
+            data = b[0].to(device)
             target = b[1].to(device)
+        else:
+            data = b.to(device)
+
+        for k, item in enumerate(data):
+            data[k] = torchvision.transforms.functional.normalize(item, self.stats[0], self.stats[1])
+
+        if len(b) == 2:
             return data, target
-        else:
-            data = normalize(b.to(device), *self.stats)
-            return data
+        return data
 
-    def proc_batch1(self, b):
-        if len(b) == 2:
-            data0 = b[0]
-            target = b[1].to(device)
-        else:
-            data0 = b
-
-        data = []
-        for im in data0:
-            data.append(im.apply_tfms(listify(self.tfms)).data)
-        data = normalize(torch.stack(data).to(device), *self.stats)
-
-        if len(b) == 2:
-           return data, target
-        else:
-            return data
 
 def make_id_dict1(class_dict):
     id_dict = {}
@@ -326,50 +312,87 @@ def make_class_idx_dict(ds, ignore=[]):
 
     return class_idx_dict
 
-class SiameseDataset(torch.utils.data.Dataset):
+class SiameseDs(torch.utils.data.Dataset):
     def __init__(self, ds):
         self.ds = ds
-        self.whale_class_dict = ds.y.items
+        self.idx2class = ds.y.items
         #self.id_dict = make_id_dict(self.whale_class_dict)
-        self.class_idx_dict = make_class_idx_dict(ds)
+        self.class_dict = make_class_idx_dict(ds)
         self.len = len(self.ds)
-        self.new_whale_idx = find_new_whale_idx(ds.y.classes)
+        self.new_whale = find_new_whale_idx(ds.y.classes)
 
     def __len__(self):
         return self.len
 
     def __getitem__(self, idx):
-        idx_a = idx
-        idx_p, type = self.find_same(idx)
-        idx_n = self.find_different(idx)
-        return self.ds[idx_a][0], self.ds[idx_p][0], self.ds[idx_n][0], type
+        if np.random.choice([0, 1]):
+            while True:
+                idx_p, pos_valid = self.find_same(idx)
+                if pos_valid:
+                    return (self.ds[idx][0], self.ds[idx_p][0]), 1
+                else:
+                    idx = np.random.randint(self.len)
+        else:
+            idx_n = self.find_different(idx)
+            return (self.ds[idx][0], self.ds[idx_n][0]), 0
 
     def find_same(self, idx):
-        whale_class = self.whale_class_dict[idx]
-        c = self.class_idx_dict[whale_class]
+        whale_class = self.idx2class[idx]
+        class_members = self.class_dict[whale_class]
 
         # for 1-class or new_whale, there is no same
-        if len(c) == 1 or whale_class == self.new_whale_idx:
+        if len(class_members) == 1 or whale_class == self.new_whale:
             return idx, 0  # 0 means anchor-positive pair is not valid
 
-        candidates = c[c != idx] #same label but not same image
-        np.random.shuffle(candidates)
-        return candidates[0], 1
+        candidates = class_members[class_members != idx] #same label but not same image
+        candidate = np.random.choice(candidates)
+        return candidate, 1
 
     def find_different(self, idx1, idx2=None):
         # already have idx2
         if idx2 is not None:
             return idx2
 
-        whale_id = self.whale_class_dict[idx1]
+        whale_class = self.idx2class[idx1]
         while True:
-            idx2 = np.random.randint(self.len // 2)
-            if self.whale_class_dict[idx2] != whale_id:
+            idx2 = np.random.randint(self.len)
+            if idx2 != idx1 and self.idx2class[idx2] != whale_class:
                 break
         return idx2
 
 
-def siamese_collate(items):
+class SiameseDsTriplet(SiameseDs):
+    def __init__(self, ds):
+        self.ds = ds
+        self.idx2class = ds.y.items
+        #self.id_dict = make_id_dict(self.whale_class_dict)
+        self.class_dict = make_class_idx_dict(ds)
+        self.len = len(self.ds)
+        self.new_whale = find_new_whale_idx(ds.y.classes)
+
+    def __getitem__(self, idx):
+        idx_a = idx
+        idx_p, pos_valid = self.find_same(idx)
+        idx_n = self.find_different(idx)
+        return self.ds[idx_a][0], self.ds[idx_p][0], self.ds[idx_n][0], pos_valid
+
+
+def collate_siamese(items):
+    im1_list = []
+    im2_list = []
+    target_list = []
+
+    for (im1, im2), target in items:
+        im1_list.append(im1)
+        im2_list.append(im2)
+        target_list.append(target)
+
+    batch = {}
+    batch['im1'] = im1_list
+    batch['im2'] = im2_list
+    return batch, torch.tensor(target_list, dtype=torch.int32)
+
+def collate_siamese_triplet(items):
     anchor_list = []
     pos_list = []
     neg_list = []
@@ -398,6 +421,51 @@ def cnn_activations_count(model, width, height):
 
 
 class SiameseNet(nn.Module):
+    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, diff_method=1):
+        super().__init__()
+        self.cnn = create_body(arch)
+        self.fc1 = nn.Linear(cnn_activations_count(arch, width, height), emb_len)
+        self.fc2 = nn.Linear(emb_len, 1)
+        self.dropout = nn.Dropout(0.0)
+        self.diff_method = diff_method
+        if self.diff_method == 1:
+            self.diff_vec = self.diff_vec1
+        else:
+            self.diff_vec = self.diff_vec2
+
+    def flatten(self, x):
+        return x.reshape(x.shape[0], -1)
+
+    def im2emb(self, im):
+        x = self.cnn(im)
+        x = self.flatten(x)
+        x = self.fc1(x)
+        x = self.dropout(x)
+        return x
+
+    def diff_vec1(self, emb1, emb2):
+        return torch.abs(emb1 - emb2)
+
+    def diff_vec2(self, emb1, emb2):
+        return ((emb1 - emb2) ** 2) / (emb1 + emb2)
+
+    def distance(self, emb1, emb2):
+        return F.pairwise_distance(emb1, emb2)
+
+    def similarity(self, dist):
+        x = self.dropout(dist)
+        logits = self.fc2(x)
+        return torch.sigmoid(logits)
+
+    def forward(self, batch):
+        emb1 = self.im2emb(batch['im1'])
+        emb2 = self.im2emb(batch['im2'])
+        diff = self.diff_vec1(emb1, emb2)
+        similarity = self.similarity(diff)
+        return similarity
+
+
+class SiameseNetTriplet(nn.Module):
     def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, diff_method=1):
         super().__init__()
         self.cnn = create_body(arch)
@@ -518,27 +586,27 @@ def stat_distance(dist_matrix, row_labels, col_labels, mask_labels=[], cut_ratio
     #generate pos_mask. note: new_whale should not be involved in positive distance and should be in mask_labels
     pos_mask = torch.zeros_like(dist_matrix)
     neg_mask = torch.zeros_like(dist_matrix)
-    for j, t1 in enumerate(row_labels):
-        for k, t2 in enumerate(col_labels):
-            if t1 == t2 and t1 not in mask_labels:
-                pos_mask[j, k] = 1
-            elif t1 != t2:
-                neg_mask[j, k] = 1
+    for j, rl in enumerate(row_labels):
+        #print(j)
+        rl_ex = rl.expand(col_labels.shape)
+        if rl not in mask_labels:
+            pos_mask[j] = (rl_ex == col_labels)
+        neg_mask[j] = (rl_ex != col_labels)
 
     #find pos-max and neg-min
-    dist_pos = dist_matrix[pos_mask > 0].sort()[0]
-    cut_len = max(len(dist_pos) // cut_ratio, 10)
-    dist_pos_max = dist_pos[-cut_len:].mean()
+    pos_dists_max0 = (dist_matrix * pos_mask).sort()[0][:, -1]
+    pos_dist_max = pos_dists_max0[pos_dists_max0 != 0].mean()
 
-    dist_neg = dist_matrix[neg_mask > 0].sort()[0]
-    cut_len = max(len(dist_neg) // cut_ratio, 10)
-    dist_neg_min = dist_neg[:cut_len].mean()
-    return dist_pos_max, dist_neg_min
+    neg_matrix = dist_matrix * neg_mask
+    neg_matrix[neg_matrix == 0] += neg_matrix.max() #to get min
+    neg_dist_min = neg_matrix.sort()[0][:, 0].mean()
+
+    return pos_dist_max, neg_dist_min
+
 
 class TripletLoss(nn.Module):
-    def __init__(self, mask_labels=[], margin=0.2, cut_ratio=4):
+    def __init__(self, margin=0.2, cut_ratio=4):
         super().__init__()
-        self.mask_labels = mask_labels
         self.margin = margin
         self.cut_ratio = cut_ratio
 
@@ -557,27 +625,20 @@ class TripletLoss(nn.Module):
         return loss
 
 
-class TripletLoss1(nn.Module):
-    def __init__(self, mask_labels=[], margin=0.2, cut_ratio=4):
-        super().__init__()
-        self.mask_labels = mask_labels
+class ContrastiveLoss(nn.Module):
+    """
+    Contrastive loss
+    Takes embeddings of two samples and a target label == 1 if samples are from the same class and label == 0 otherwise
+    """
+    def __init__(self, margin):
+        super(ContrastiveLoss, self).__init__()
         self.margin = margin
-        self.cut_ratio = cut_ratio
+        self.eps = 1e-9
 
-    def forward(self, dist_matrix, targets):
-        dist_pos_max, dist_neg_min = stat_distance(dist_matrix, targets, targets, self.mask_labels, self.cut_ratio)
-        #triplet loss
-        loss = torch.relu(dist_pos_max + self.margin - dist_neg_min)
-        return loss
+    def forward(self, distances, target, size_average=True):
+        losses = target.float() * distances + (1 - target).float() * torch.relu(self.margin - distances)
+        return losses.mean() if size_average else losses.sum()
 
-
-def contrasive_loss(out, targets, valid_mask):
-    #todo
-    pass
-#loss_contrastive = torch.mean(
-# (1-label)*torch.pow(euclidean_distance, 2) +
-# (label)*torch.pow(torch.clamp(self.margin-euclidean_distance, min=0.0),
-# 2))
 
 def normalize_batch(batch):
     stat_tensors = [torch.tensor(l).to(device) for l in imagenet_stats]
@@ -599,7 +660,7 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         return embs
 
 
-def siamese_validate(val_dl, model, rf_dl, sim_batch_len=10000, pos_mask=[]):
+def siamese_validate(val_dl, model, rf_dl, pos_mask=[]):
     model.eval()
     with torch.no_grad():
         # calculate embeddings of all validation_set
@@ -615,20 +676,17 @@ def siamese_validate(val_dl, model, rf_dl, sim_batch_len=10000, pos_mask=[]):
 
         # calculate distances between all val_embs and all rf_embs
         distances = []
-        rf_len = len(rf_target_tensor)
-        for k, val_emb in enumerate(val_emb_tensor):
+        #print(f'{now2str()} calculate distance matrix')
+        for i, val_emb in enumerate(val_emb_tensor):
+            #print(f'{now2str()} calculate row {i}')
             distance_list = []
-            #for rf_emb_batch in rf_embs:
-            for k in range(0, rf_len, sim_batch_len):
-                rf_emb_batch = rf_emb_tensor[k:k+sim_batch_len]
-                shape = rf_emb_batch.shape
-                val_emb_batch = val_emb.expand(shape[0], shape[1])
-                dists = model.distance(val_emb_batch, rf_emb_batch)
-                distance_list.append(dists)
-            distances.append(torch.cat(distance_list).view(-1))
-        distance_matrix = torch.cat(distances).view(len(val_emb_tensor), -1)
+            val_emb_batch = val_emb.expand(rf_emb_tensor.shape)
+            dists = model.distance(val_emb_batch, rf_emb_tensor)
+            distances.append(dists)
+        distance_matrix = torch.stack(distances)
 
         #find average max positive distance and average min negative distance
+        #print(f'{now2str()} find max positive distance and min negative distance')
         dist_pos_max, dist_neg_min = stat_distance(distance_matrix, val_target_tensor, rf_target_tensor, mask_labels=pos_mask)
         print(f'dist_pos_max = {dist_pos_max}, dist_neg_min = {dist_neg_min}')
 
@@ -637,34 +695,26 @@ def siamese_validate(val_dl, model, rf_dl, sim_batch_len=10000, pos_mask=[]):
         # cal map5
         map5 = cal_mapk(distance_matrix, val_target_tensor, k=5)
         print(f'map5 = {map5}')
-
+        return map5, dist_pos_max, dist_neg_min
 
 class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
     "A `Callback` to validate SiameseNet."
 
-    def __init__(self, learn):
+    def __init__(self, learn, txlog=None):
         super().__init__(learn)
-#        class_1_dict = gen_class_reference(self.learn.data.train)
-#        self.class_dl = DataLoader(
-#            Class1Dataset(self.learn.data.train, class_1_dict),
-#            batch_size=self.learn.data.valid_dl.batch_size,
-#            shuffle=False,
-#            drop_last=False,
-#            num_workers=self.learn.data.valid_dl.dl_workers
-#        )
-
-    #def on_epoch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-    #    map5 = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.train_rf_dl)
-    #    print()
-    #    return map5
+        self.txlog = txlog
 
     #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
     def on_epoch_end(self, epoch, **kwargs: Any) -> None:
         "Stop the training if necessary."
         print(f'Epoch {epoch} validation:')
         new_whale_idx = find_new_whale_idx(self.learn.data.train_dl.ds.y.classes)
-        siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl, pos_mask=[new_whale_idx])
+        map5, pos_dist_max, neg_dist_min = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl, pos_mask=[new_whale_idx])
+        self.txlog.add_scalar('map5', map5, epoch)
+        self.txlog.add_scalar('pos_dist_max', pos_dist_max, epoch)
+        self.txlog.add_scalar('neg_dist_min', neg_dist_min, epoch)
+        self.txlog.add_scalar('dist_diff', neg_dist_min - pos_dist_max, epoch)
+        print('\n')
 
 
 @dataclass
@@ -723,6 +773,4 @@ def fit(epochs: int, model: nn.Module, loss_func: LossFunction, opt: optim.Optim
 def gen_class_reference(ds):
     class_1_dict = make_class_1_idx_dict(ds, ignore=['new_whale'])
     return class_1_dict
-
-
 
