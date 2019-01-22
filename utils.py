@@ -53,19 +53,37 @@ def plot_lr(self):
         if not in_ipynb():
             plt.savefig(os.path.join(self.save_path, 'lr_plot.png'))
 
-def cal_mapk(dist_matrix:tensor, targets:tensor, k=5, average=True):
-    topk_dists, topk_idxes = dist_matrix.topk(k, largest=False, dim=1)
-    onehots = (topk_idxes == targets.view(-1, 1))
-    onehots = onehots.detach().cpu().numpy()
+def cal_mapk(data_matrix:tensor, targets:tensor, target_idx2class=[], k=5, average=True, threshold=2.0, ref_idx2class=[], descending=True):
+    topk_dists, topk_idxes = data_matrix.sort(dim=1, descending=descending)
+    topk_dists = topk_dists.detach().cpu().numpy()
+    topk_idxes = topk_idxes.detach().cpu().numpy()
+    targets = targets.detach().cpu().numpy()
 
-    mapk = np.zeros(len(onehots))
-    for i, onehot in enumerate(onehots):
-        r = np.where(onehot == 1)[0]
-        if len(r) > 0:
-            mapk[i] = 1 / (r[0] + 1)
+    #topk_matrix = 0 - np.ones((data_matrix.shape[0], k), dtype=np.int32)
+    topk_matrix = [['' for _ in range(topk_idxes.shape[1])] for _ in range(topk_idxes.shape[0])]
+    mapk = np.zeros(len(targets))
+    for row, (values, idxes) in enumerate(zip(topk_dists, topk_idxes)):
+        c = 0
+        for col, (value, idx) in enumerate(zip(values, idxes)):
+            if value > threshold and 'new_whale' not in topk_matrix[row]:
+                topk_matrix[row][c] = 'new_whale'
+                c += 1
+                if target_idx2class[targets[row]].obj == 'new_whale' and mapk[row] == 0:
+                    mapk[row] = 1 / c
+            else:
+                class_str = ref_idx2class[idx].obj
+                if class_str not in topk_matrix[row]:
+                    topk_matrix[row][c] = class_str
+                    c += 1
+                    if target_idx2class[targets[row]].obj == class_str and mapk[row] == 0:
+                        mapk[row] = 1 / c
+
+            if c >= k:
+                break
     if average:
-        return mapk.mean()
-    return mapk
+        mapk = mapk.mean()
+
+    return topk_matrix, mapk
 
 
 # https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/average_precision.py
@@ -466,7 +484,7 @@ class SiameseNet(nn.Module):
 
 
 from functional import seq
-
+#original net by Radek
 class SiameseNetwork1(nn.Module):
     def __init__(self, arch=models.resnet18):
         super().__init__()
@@ -486,23 +504,21 @@ class SiameseNetwork1(nn.Module):
     def calculate_distance(self, x1, x2):
         return (x1 - x2).abs_()
 
-
+#modified Radek's net not using seq
 class SiameseNetwork(nn.Module):
     def __init__(self, arch=models.resnet18):
         super().__init__()
         self.cnn = create_body(arch)
         self.fc = nn.Linear(num_features_model(self.cnn), 1)
 
-    def im2emb(self, batch):
-        x = self.cnn(batch)
+    def im2emb(self, im):
+        x = self.cnn(im)
         x = self.process_features(x)
         return x
 
-    def forward(self, batch):
-        x1 = self.cnn(batch['im1'])
-        x1 = self.process_features(x1)
-        x2 = self.cnn(batch['im2'])
-        x2 = self.process_features(x2)
+    def forward(self, im1, im2):
+        x1 = self.im2emb(im1)
+        x2 = self.im2emb(im2)
         dl = self.distance(x1, x2)
         out = self.fc(dl)
         return out
@@ -517,6 +533,30 @@ class SiameseNetwork(nn.Module):
         dl = self.distance(x1, x2)
         logit = self.fc(dl)
         return torch.sigmoid(logit)
+
+#for contrastive loss
+class SiameseNetwork2(nn.Module):
+    def __init__(self, arch=models.resnet18):
+        super().__init__()
+        self.cnn = create_body(arch)
+        self.fc = nn.Linear(num_features_model(self.cnn), 1)
+
+    def im2emb(self, im):
+        x = self.cnn(im)
+        x = self.process_features(x)
+        return x
+
+    def forward(self, im1, im2):
+        x1 = self.im2emb(im1)
+        x2 = self.im2emb(im2)
+        dist = self.distance(x1, x2)
+        return dist
+
+    def process_features(self, x):
+        return x.reshape(*x.shape[:2], -1).max(-1)[0]
+
+    def distance(self, x1, x2):
+        return (x1 - x2).abs().mean(dim=1)
 
 
 class SiameseNetTriplet(nn.Module):
@@ -634,7 +674,7 @@ def triplet_loss(dist_matrix, targets, mask_labels=[], margin=0.2):
     loss = torch.relu(dist_pos_max + margin - dist_neg_min)
     return loss
 
-def stat_distance(dist_matrix, row_labels, col_labels, mask_labels=[], cut_ratio=4):
+def stat_distance(dist_matrix, row_labels, col_labels, mask_labels=[]):
     assert len(row_labels) == dist_matrix.shape[0]
     assert len(col_labels) == dist_matrix.shape[1]
     #generate pos_mask. note: new_whale should not be involved in positive distance and should be in mask_labels
@@ -729,7 +769,7 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         return embs
 
 
-def siamese_validate(val_dl, model, rf_dl, pos_mask=[]):
+def siamese_validate(val_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target_idx2class=[]):
     model.eval()
     with torch.no_grad():
         # calculate embeddings of all validation_set
@@ -763,7 +803,7 @@ def siamese_validate(val_dl, model, rf_dl, pos_mask=[]):
         # todo:insert new_whale
 
         # cal map5
-        map5 = cal_mapk(distance_matrix, val_target_tensor, k=5)
+        top5_matrix, map5 = cal_mapk(distance_matrix, val_target_tensor, k=5, ref_idx2class=ref_idx2class, target_idx2class=target_idx2class)
         print(f'map5 = {map5}')
         return map5, dist_pos_max, dist_neg_min
 
@@ -779,7 +819,9 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
         "Stop the training if necessary."
         print(f'Epoch {epoch} validation:')
         new_whale_idx = find_new_whale_idx(self.learn.data.train_dl.ds.y.classes)
-        map5, pos_dist_max, neg_dist_min = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl, pos_mask=[new_whale_idx])
+        map5, pos_dist_max, neg_dist_min = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl,
+                                                            pos_mask=[new_whale_idx], ref_idx2class=self.learn.data.fix_dl.ds.y,
+                                                            target_idx2class=self.learn.data.valid_dl.ds.y)
         self.txlog.add_scalar('map5', map5, epoch)
         self.txlog.add_scalar('pos_dist_max', pos_dist_max, epoch)
         self.txlog.add_scalar('neg_dist_min', neg_dist_min, epoch)
