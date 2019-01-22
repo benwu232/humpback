@@ -6,7 +6,7 @@ import torchvision
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #some parameters
-debug = 1
+debug = 0
 enable_lr_find = 1
 now_str = now2str(format="%Y-%m-%d_%H-%M-%S")
 txlog = tx.SummaryWriter(f'../tblog/{now_str}')
@@ -60,6 +60,7 @@ file_lut = df0.set_index('Image').to_dict()
 
 im_tfms = get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2)
 
+
 data = (
     ImageItemList
         # .from_df(df_known, 'data/train', cols=['Image'])
@@ -70,7 +71,7 @@ data = (
         # .random_split_by_pct(seed=SEED)
         .label_from_func(lambda path: fn2label[path2fn(str(path))])
         .add_test(ImageItemList.from_folder(test_path))
-        #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
+        .transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
         #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
         #.databunch(bs=BS, num_workers=NUM_WORKERS, path=root_path)
         #.normalize(imagenet_stats)
@@ -137,7 +138,9 @@ else:
     )
 
 
-data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl, collate_fn=collate_siamese_triplet)
+data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl)
+data_bunch.add_tfm(normalize_batch)
+'''
 data_bunch.train_dl = DataLoaderTrain1(train_dl, device, tfms=im_tfms[0], collate_fn=collate_siamese)
 #data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
 data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
@@ -145,6 +148,7 @@ data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_c
 data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_collate)
 #data_bunch.add_tfm(normalize_batch)
 #data_bunch.valid_dl = None
+'''
 
 #for batch in data_bunch.train_dl:
 #    print(len(batch))
@@ -156,7 +160,7 @@ data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_col
 #exit()
 
 #siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
-siamese = SiameseNetwork(arch=arch)
+siamese = SiameseNetwork1(arch=arch)
 
 # new_whale should not be involved in positive distance
 new_whale_idx = find_new_whale_idx(data.train.y.classes)
@@ -166,8 +170,8 @@ contrastive_loss = ContrastiveLoss(margin=1.0)
 learn = LearnerEx(data_bunch,
                   siamese,
                   enable_validate=False,
-                  #loss_func=BCEWithLogitsFlat(),
-                  loss_func=contrastive_loss,
+                  loss_func=BCEWithLogitsFlat(),
+                  #loss_func=contrastive_loss,
                   #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                   )
 

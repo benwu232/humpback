@@ -465,6 +465,60 @@ class SiameseNet(nn.Module):
         return similarity
 
 
+from functional import seq
+
+class SiameseNetwork1(nn.Module):
+    def __init__(self, arch=models.resnet18):
+        super().__init__()
+        self.cnn = create_body(arch)
+        self.head = nn.Linear(num_features_model(self.cnn), 1)
+
+    def forward(self, im_A, im_B):
+        # dl - distance layer
+        x1, x2 = seq(im_A, im_B).map(self.cnn).map(self.process_features)
+        dl = self.calculate_distance(x1, x2)
+        out = self.head(dl)
+        return out
+
+    def process_features(self, x):
+        return x.reshape(*x.shape[:2], -1).max(-1)[0]
+
+    def calculate_distance(self, x1, x2):
+        return (x1 - x2).abs_()
+
+
+class SiameseNetwork(nn.Module):
+    def __init__(self, arch=models.resnet18):
+        super().__init__()
+        self.cnn = create_body(arch)
+        self.fc = nn.Linear(num_features_model(self.cnn), 1)
+
+    def im2emb(self, batch):
+        x = self.cnn(batch)
+        x = self.process_features(x)
+        return x
+
+    def forward(self, batch):
+        x1 = self.cnn(batch['im1'])
+        x1 = self.process_features(x1)
+        x2 = self.cnn(batch['im2'])
+        x2 = self.process_features(x2)
+        dl = self.distance(x1, x2)
+        out = self.fc(dl)
+        return out
+
+    def process_features(self, x):
+        return x.reshape(*x.shape[:2], -1).max(-1)[0]
+
+    def distance(self, x1, x2):
+        return (x1 - x2).abs()
+
+    def similarity(self, x1, x2):
+        dl = self.distance(x1, x2)
+        logit = self.fc(dl)
+        return torch.sigmoid(logit)
+
+
 class SiameseNetTriplet(nn.Module):
     def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, diff_method=1):
         super().__init__()
@@ -645,6 +699,21 @@ def normalize_batch(batch):
     return [normalize(batch[0][0], *stat_tensors), normalize(batch[0][1], *stat_tensors)], batch[1]
 
 
+def ds_siamese_emb1(dl, model, ds_with_target=True):
+    embs = []
+    if ds_with_target:
+        targets = []
+        for k, (data, target) in enumerate(dl):
+            #print(k)
+            embs.append(model.im2emb(data))
+            targets.append(target)
+        return embs, targets
+    else:
+        for data in dl:
+            embs.append(model.im2emb(data))
+        return embs
+
+
 def ds_siamese_emb(dl, model, ds_with_target=True):
     embs = []
     if ds_with_target:
@@ -681,7 +750,8 @@ def siamese_validate(val_dl, model, rf_dl, pos_mask=[]):
             #print(f'{now2str()} calculate row {i}')
             distance_list = []
             val_emb_batch = val_emb.expand(rf_emb_tensor.shape)
-            dists = model.distance(val_emb_batch, rf_emb_tensor)
+            #dists = model.distance(val_emb_batch, rf_emb_tensor)
+            dists = model.similarity(val_emb_batch, rf_emb_tensor).view(-1)
             distances.append(dists)
         distance_matrix = torch.stack(distances)
 
