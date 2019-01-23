@@ -6,7 +6,7 @@ import torchvision
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #some parameters
-debug = 0
+debug = 1
 enable_lr_find = 1
 now_str = now2str(format="%Y-%m-%d_%H-%M-%S")
 txlog = tx.SummaryWriter(f'../tblog/{now_str}')
@@ -62,31 +62,6 @@ file_lut = df0.set_index('Image').to_dict()
 im_tfms = get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2)
 
 
-data = (
-    ImageItemList
-        # .from_df(df_known, 'data/train', cols=['Image'])
-        .from_folder(train_path)
-        # .split_by_idxs(train_item_list, val_item_list)
-        .split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
-        # .split_by_idx(val_list)
-        # .random_split_by_pct(seed=SEED)
-        .label_from_func(lambda path: fn2label[path2fn(str(path))])
-        #.add_test(ImageItemList.from_folder(test_path))
-        .transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
-        #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
-        .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
-        #.normalize(imagenet_stats)
-)
-
-data.add_tfm(normalize_batch)
-
-train_dl = DataLoader(
-    SiameseDs(data.train_ds),
-    batch_size=train_batch_size,
-    shuffle=True,
-    #collate_fn=siamese_collate,
-    num_workers=dl_workers
-)
 
 data_v = (
     ImageItemList
@@ -98,11 +73,10 @@ data_v = (
         # .random_split_by_pct(seed=SEED)
         .label_from_func(lambda path: fn2label[path2fn(str(path))])
         .add_test(ImageItemList.from_folder(test_path))
-        #.add_test_folder(test_path)
         #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
         #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
         .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
-        .normalize(imagenet_stats)
+        #.normalize(imagenet_stats)
 )
 
 #v = SimpleDataset(data.valid)
@@ -130,32 +104,83 @@ ref_dl = DataLoader(
     num_workers=dl_workers
 )
 
-data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl)
+data = (
+    ImageItemList
+        # .from_df(df_known, 'data/train', cols=['Image'])
+        .from_folder(train_path)
+        # .split_by_idxs(train_item_list, val_item_list)
+        .split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
+        # .split_by_idx(val_list)
+        # .random_split_by_pct(seed=SEED)
+        .label_from_func(lambda path: fn2label[path2fn(str(path))])
+        #.add_test(ImageItemList.from_folder(test_path))
+        #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
+        .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
+        .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
+        #.normalize(imagenet_stats)
+)
 
-#siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
-siamese = SiameseNetwork2(arch=arch)
+#data.add_tfm(normalize_batch)
+
+train_dl = DataLoader(
+    SiameseDs(data.train_ds, data.train_dl),
+    batch_size=train_batch_size,
+    shuffle=True,
+    #collate_fn=siamese_collate,
+    num_workers=dl_workers
+)
+
+tmp_data_bunch = ImageDataBunch(train_dl, data_v.valid_dl)
+tmp_data_bunch.add_tfm(normalize_batch)
+
+data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl, test_dl=test_dl)
+data_bunch.normalize(imagenet_stats)
+
+data_bunch.train_dl = tmp_data_bunch.train_dl
+
+'''
+data_bunch.train_dl = DataLoaderTrain1(train_dl, device, tfms=im_tfms[0], collate_fn=collate_siamese)
+#data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
+data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
+data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
+data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_collate)
+#data_bunch.add_tfm(normalize_batch)
+#data_bunch.valid_dl = None
+'''
+
+#for batch in data_bunch.train_dl:
+#    print(len(batch))
+#    break
+#for batch in data_bunch.fix_dl:
+#    print(len(batch))
+#    break
+#
+#exit()
+
+siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method, drop_rate=0.5)
+#siamese = SiameseNetwork2(arch=arch)
 
 # new_whale should not be involved in positive distance
-new_whale_idx = find_new_whale_idx(data.train_ds.y.classes)
-#new_whale_idx = find_new_whale_idx(data_v.valid_ds.y.classes)
+#new_whale_idx = find_new_whale_idx(data.train_ds.y.classes)
 #triploss = TripletLoss(margin=0.2)
-contrastive_loss = ContrastiveLoss(margin=1.0)
+contrastive_loss = ContrastiveLoss(margin=2.0)
 
 learn = LearnerEx(data_bunch,
                   siamese,
                   enable_validate=False,
+                  wd=0.03,
                   #loss_func=BCEWithLogitsFlat(),
                   loss_func=contrastive_loss,
                   #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                   )
 
-learn.load(f'siamese_20')
+learn.load(f'siamese_1')
 learn.model.to(device)
 
 map5, top5_matrix, pos_dist_max, neg_dist_min = siamese_mat(data_v.test_dl, learn.model, ref_dl,
                                                             pos_mask=[0], ref_idx2class=ref_dl.ds.y,
                                                             target_idx2class=valid_dl.ds.y, enable_cal_dist=False)
 
-gen_submission(top5_matrix, data_v.test_ds.x.items, submit_path+'siamese_contrastive_20')
+gen_submission(top5_matrix, data_v.test_ds.x.items, submit_path+'siamese_contrastive_1')
 
 

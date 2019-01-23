@@ -47,7 +47,6 @@ if debug:
     val_list = val_list_dbg
 else:
     train_list, val_list = split_whale_set(df0, nth_fold=0, new_whale_method=1, seed=1)
-print(len(train_list), len(val_list))
 
 im_count = df0[df0.Id != 'new_whale'].Id.value_counts()
 im_count.name = 'sighting_count'
@@ -73,7 +72,7 @@ data_v = (
         .label_from_func(lambda path: fn2label[path2fn(str(path))])
         .add_test(ImageItemList.from_folder(test_path))
         #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
-        .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
+        #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
         .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
         #.normalize(imagenet_stats)
 )
@@ -102,6 +101,7 @@ ref_dl = DataLoader(
     #collate_fn=siamese_collate,
     num_workers=dl_workers
 )
+
 
 data = (
     ImageItemList
@@ -137,6 +137,8 @@ data_bunch.normalize(imagenet_stats)
 
 data_bunch.train_dl = tmp_data_bunch.train_dl
 
+print(f'train_set: {len(data_bunch.train_dl)}, val_set: {len(data_bunch.valid_dl)}, fix_set: {len(data_bunch.fix_dl)}, test_set: {len(data_bunch.test_dl)}')
+
 '''
 data_bunch.train_dl = DataLoaderTrain1(train_dl, device, tfms=im_tfms[0], collate_fn=collate_siamese)
 #data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
@@ -156,7 +158,7 @@ data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_col
 #
 #exit()
 
-siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method, drop_rate=0.0)
+siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method, drop_rate=0.5)
 #siamese = SiameseNetwork2(arch=arch)
 
 # new_whale should not be involved in positive distance
@@ -167,6 +169,7 @@ contrastive_loss = ContrastiveLoss(margin=2.0)
 learn = LearnerEx(data_bunch,
                   siamese,
                   enable_validate=False,
+                  wd=0.03,
                   #loss_func=BCEWithLogitsFlat(),
                   loss_func=contrastive_loss,
                   #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
@@ -185,7 +188,7 @@ if enable_lr_find:
     learn.recorder.plot()
     plt.savefig('lr_find.png')
 
-learn.fit_one_cycle(3, 1e-4)
+learn.fit_one_cycle(4, 1e-4)
 learn.unfreeze()
 
 max_lr = 1e-4

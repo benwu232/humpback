@@ -60,31 +60,6 @@ file_lut = df0.set_index('Image').to_dict()
 im_tfms = get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2)
 
 
-data = (
-    ImageItemList
-        # .from_df(df_known, 'data/train', cols=['Image'])
-        .from_folder(train_path)
-        # .split_by_idxs(train_item_list, val_item_list)
-        .split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
-        # .split_by_idx(val_list)
-        # .random_split_by_pct(seed=SEED)
-        .label_from_func(lambda path: fn2label[path2fn(str(path))])
-        #.add_test(ImageItemList.from_folder(test_path))
-        .transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
-        #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
-        .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
-        .normalize(imagenet_stats)
-)
-
-#data.add_tfm(normalize_batch)
-
-train_dl = DataLoader(
-    SiameseDsTriplet(data.train_ds),
-    batch_size=train_batch_size,
-    shuffle=True,
-    #collate_fn=siamese_collate,
-    num_workers=dl_workers
-)
 
 data_v = (
     ImageItemList
