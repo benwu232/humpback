@@ -770,11 +770,11 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         return embs
 
 
-def siamese_validate(val_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target_idx2class=[]):
+def siamese_mat(in_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target_idx2class=[], enable_cal_dist=True):
     model.eval()
     with torch.no_grad():
         # calculate embeddings of all validation_set
-        val_embs, targets = ds_siamese_emb(val_dl, model, ds_with_target=True)
+        val_embs, targets = ds_siamese_emb(in_dl, model, ds_with_target=True)
         val_emb_tensor = torch.cat(val_embs)
         val_target_tensor = torch.cat(targets)
         #print(val_emb_tensor.shape, val_target_tensor.shape)
@@ -782,7 +782,7 @@ def siamese_validate(val_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target
         # calculate embeddings of all classes except new_whale
         rf_embs, rf_targets = ds_siamese_emb(rf_dl, model, ds_with_target=True)
         rf_emb_tensor = torch.cat(rf_embs)
-        rf_target_tensor = torch.cat(rf_targets)
+        rf_target_tensor = torch.cat(rf_targets).to(device)
 
         # calculate distances between all val_embs and all rf_embs
         distances = []
@@ -798,8 +798,10 @@ def siamese_validate(val_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target
 
         #find average max positive distance and average min negative distance
         #print(f'{now2str()} find max positive distance and min negative distance')
-        dist_pos_max, dist_neg_min = stat_distance(distance_matrix, val_target_tensor, rf_target_tensor, mask_labels=pos_mask)
-        print(f'dist_pos_max = {dist_pos_max}, dist_neg_min = {dist_neg_min}')
+        dist_pos_max, dist_neg_min = -1, -1
+        if enable_cal_dist:
+            dist_pos_max, dist_neg_min = stat_distance(distance_matrix, val_target_tensor, rf_target_tensor, mask_labels=pos_mask)
+            print(f'dist_pos_max = {dist_pos_max}, dist_neg_min = {dist_neg_min}')
 
         # todo:insert new_whale
 
@@ -820,9 +822,9 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
         "Stop the training if necessary."
         print(f'Epoch {epoch} validation:')
         new_whale_idx = find_new_whale_idx(self.learn.data.train_dl.ds.y.classes)
-        map5, top5_matrix, pos_dist_max, neg_dist_min = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl,
-                                                            pos_mask=[new_whale_idx], ref_idx2class=self.learn.data.fix_dl.ds.y,
-                                                            target_idx2class=self.learn.data.valid_dl.ds.y)
+        map5, top5_matrix, pos_dist_max, neg_dist_min = siamese_mat(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl,
+                                                                    pos_mask=[new_whale_idx], ref_idx2class=self.learn.data.fix_dl.ds.y,
+                                                                    target_idx2class=self.learn.data.valid_dl.ds.y)
         self.txlog.add_scalar('map5', map5, epoch)
         self.txlog.add_scalar('pos_dist_max', pos_dist_max, epoch)
         self.txlog.add_scalar('neg_dist_min', neg_dist_min, epoch)
@@ -886,4 +888,17 @@ def fit(epochs: int, model: nn.Module, loss_func: LossFunction, opt: optim.Optim
 def gen_class_reference(ds):
     class_1_dict = make_class_1_idx_dict(ds, ignore=['new_whale'])
     return class_1_dict
+
+
+def gen_submission(top5_matrix, image_files, out_file):
+    top5_classes = []
+    for top5 in top5_matrix:
+        top5_classes.append(' '.join([t for t in top5]))
+
+    submission = pd.DataFrame({'Image': [path.name for path in image_files]})
+    submission['Id'] = top5_classes
+    #submission.to_csv(f'../submission/{out_file}.csv.gz', index=False, compression='gzip')
+    submission.to_csv(f'../submission/{out_file}.csv', index=False)
+
+
 

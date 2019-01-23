@@ -28,6 +28,7 @@ emb_len = 128
 diff_method = 1
 
 root_path = '../input/'
+submit_path = '../submission/'
 if debug == 1:
     train_path = '../input/train1_224/'
     test_path = '../input/test1_224/'
@@ -97,6 +98,7 @@ data_v = (
         # .random_split_by_pct(seed=SEED)
         .label_from_func(lambda path: fn2label[path2fn(str(path))])
         .add_test(ImageItemList.from_folder(test_path))
+        #.add_test_folder(test_path)
         #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
         #.transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
         .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
@@ -130,27 +132,8 @@ ref_dl = DataLoader(
 
 data_bunch = ImageDataBunch(train_dl, valid_dl, fix_dl=ref_dl)
 
-'''
-data_bunch.train_dl = DataLoaderTrain1(train_dl, device, tfms=im_tfms[0], collate_fn=collate_siamese)
-#data_bunch.valid_dl = DataLoaderMod(valid_dl, None, None, siamese_collate)
-data_bunch.valid_dl = DataLoaderVal(valid_dl, device, tfms=None, collate_fn=data_collate)
-data_bunch.test_dl = DataLoaderVal(test_dl, device, tfms=None, collate_fn=data_collate)
-data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_collate)
-#data_bunch.add_tfm(normalize_batch)
-#data_bunch.valid_dl = None
-'''
-
-#for batch in data_bunch.train_dl:
-#    print(len(batch))
-#    break
-#for batch in data_bunch.fix_dl:
-#    print(len(batch))
-#    break
-#
-#exit()
-
 #siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
-siamese = SiameseNetwork(arch=arch)
+siamese = SiameseNetwork2(arch=arch)
 
 # new_whale should not be involved in positive distance
 new_whale_idx = find_new_whale_idx(data.train_ds.y.classes)
@@ -161,17 +144,18 @@ contrastive_loss = ContrastiveLoss(margin=1.0)
 learn = LearnerEx(data_bunch,
                   siamese,
                   enable_validate=False,
-                  loss_func=BCEWithLogitsFlat(),
-                  #loss_func=contrastive_loss,
+                  #loss_func=BCEWithLogitsFlat(),
+                  loss_func=contrastive_loss,
                   #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                   )
 
-learn.load(f'res18-siamese-stage-2')
+learn.load(f'siamese_20')
 learn.model.to(device)
 
-map5, top5_matrix, pos_dist_max, neg_dist_min = siamese_mat(valid_dl, learn.model, ref_dl,
+map5, top5_matrix, pos_dist_max, neg_dist_min = siamese_mat(data_v.test_dl, learn.model, ref_dl,
                                                             pos_mask=[0], ref_idx2class=ref_dl.ds.y,
-                                                            target_idx2class=valid_dl.ds.y)
+                                                            target_idx2class=valid_dl.ds.y, enable_cal_dist=False)
 
-print(map5, pos_dist_max, neg_dist_min)
+gen_submission(top5_matrix, data_v.test_ds.x.items, submit_path+'siamese_contrastive_20')
+
 
