@@ -331,8 +331,9 @@ def make_class_idx_dict(ds, ignore=[]):
     return class_idx_dict
 
 class SiameseDs(torch.utils.data.Dataset):
-    def __init__(self, ds):
+    def __init__(self, ds, dl):
         self.ds = ds
+        self.dl = dl
         self.idx2class = ds.y.items
         #self.id_dict = make_id_dict(self.whale_class_dict)
         self.class_dict = make_class_idx_dict(ds)
@@ -347,12 +348,17 @@ class SiameseDs(torch.utils.data.Dataset):
             while True:
                 idx_p, pos_valid = self.find_same(idx)
                 if pos_valid:
-                    return (self.ds[idx][0], self.ds[idx_p][0]), 1
+                    im1, label1 = self.dl.__getitem__(idx)
+                    im2, label2 = self.dl.__getitem__(idx_p)
+                    assert label1.obj == label2.obj
+                    return (im1, im2), 1
                 else:
                     idx = np.random.randint(self.len)
         else:
             idx_n = self.find_different(idx)
-            return (self.ds[idx][0], self.ds[idx_n][0]), 0
+            im1, label1 = self.dl.__getitem__(idx)
+            im3, label3 = self.dl.__getitem__(idx_n)
+            return (im1, im3), 0
 
     def find_same(self, idx):
         whale_class = self.idx2class[idx]
@@ -392,7 +398,7 @@ class SiameseDsTriplet(SiameseDs):
         idx_a = idx
         idx_p, pos_valid = self.find_same(idx)
         idx_n = self.find_different(idx)
-        return self.ds[idx_a][0], self.ds[idx_p][0], self.ds[idx_n][0], pos_valid
+        return (self.ds[idx_a][0], self.ds[idx_p][0], self.ds[idx_n][0]), pos_valid
 
 
 def collate_siamese(items):
@@ -439,12 +445,12 @@ def cnn_activations_count(model, width, height):
 
 
 class SiameseNet(nn.Module):
-    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, diff_method=1):
+    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, diff_method=1, drop_rate=0.3):
         super().__init__()
         self.cnn = create_body(arch)
         self.fc1 = nn.Linear(cnn_activations_count(arch, width, height), emb_len)
         self.fc2 = nn.Linear(emb_len, 1)
-        self.dropout = nn.Dropout(0.0)
+        self.dropout = nn.Dropout(drop_rate)
         self.diff_method = diff_method
         if self.diff_method == 1:
             self.diff_vec = self.diff_vec1
@@ -457,8 +463,8 @@ class SiameseNet(nn.Module):
     def im2emb(self, im):
         x = self.cnn(im)
         x = self.flatten(x)
-        x = self.fc1(x)
         x = self.dropout(x)
+        x = self.fc1(x)
         return x
 
     def diff_vec1(self, emb1, emb2):
@@ -475,12 +481,18 @@ class SiameseNet(nn.Module):
         logits = self.fc2(x)
         return torch.sigmoid(logits)
 
-    def forward(self, batch):
+    def forward1(self, batch):
         emb1 = self.im2emb(batch['im1'])
         emb2 = self.im2emb(batch['im2'])
         diff = self.diff_vec1(emb1, emb2)
         similarity = self.similarity(diff)
         return similarity
+
+    def forward(self, im1, im2):
+        x1 = self.im2emb(im1)
+        x2 = self.im2emb(im2)
+        dist = self.distance(x1, x2)
+        return dist
 
 
 from functional import seq
@@ -690,10 +702,13 @@ def stat_distance(dist_matrix, row_labels, col_labels, mask_labels=[]):
     #find pos-max and neg-min
     pos_dists_max0 = (dist_matrix * pos_mask).sort()[0][:, -1]
     pos_dist_max = pos_dists_max0[pos_dists_max0 != 0].mean()
+    del pos_mask
 
     neg_matrix = dist_matrix * neg_mask
+    del dist_matrix
     neg_matrix[neg_matrix == 0] += neg_matrix.max() #to get min
     neg_dist_min = neg_matrix.sort()[0][:, 0].mean()
+    del neg_matrix
 
     return pos_dist_max, neg_dist_min
 
@@ -808,6 +823,7 @@ def siamese_mat(in_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target_idx2c
         # cal map5
         top5_matrix, map5 = cal_mapk(distance_matrix, val_target_tensor, k=5, ref_idx2class=ref_idx2class, target_idx2class=target_idx2class)
         print(f'map5 = {map5}')
+        torch.cuda.empty_cache()
         return map5, top5_matrix, dist_pos_max, dist_neg_min
 
 class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
