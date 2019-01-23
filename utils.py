@@ -53,14 +53,14 @@ def plot_lr(self):
         if not in_ipynb():
             plt.savefig(os.path.join(self.save_path, 'lr_plot.png'))
 
-def cal_mapk(data_matrix:tensor, targets:tensor, target_idx2class=[], k=5, average=True, threshold=2.0, ref_idx2class=[], descending=True):
+def cal_mapk(data_matrix:tensor, targets:tensor, target_idx2class=[], k=5, average=True, threshold=2.0, ref_idx2class=[], descending=False):
     topk_dists, topk_idxes = data_matrix.sort(dim=1, descending=descending)
     topk_dists = topk_dists.detach().cpu().numpy()
     topk_idxes = topk_idxes.detach().cpu().numpy()
     targets = targets.detach().cpu().numpy()
 
     #topk_matrix = 0 - np.ones((data_matrix.shape[0], k), dtype=np.int32)
-    topk_matrix = [['' for _ in range(topk_idxes.shape[1])] for _ in range(topk_idxes.shape[0])]
+    topk_matrix = [['' for _ in range(k)] for _ in range(topk_idxes.shape[0])]
     mapk = np.zeros(len(targets))
     for row, (values, idxes) in enumerate(zip(topk_dists, topk_idxes)):
         c = 0
@@ -760,6 +760,7 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
         targets = []
         for k, (data, target) in enumerate(dl):
             #print(k)
+            data = data.to(device)
             embs.append(model.im2emb(data))
             targets.append(target)
         return embs, targets
@@ -790,8 +791,8 @@ def siamese_validate(val_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target
             #print(f'{now2str()} calculate row {i}')
             distance_list = []
             val_emb_batch = val_emb.expand(rf_emb_tensor.shape)
-            #dists = model.distance(val_emb_batch, rf_emb_tensor)
-            dists = model.similarity(val_emb_batch, rf_emb_tensor).view(-1)
+            dists = model.distance(val_emb_batch, rf_emb_tensor)
+            #dists = model.similarity(val_emb_batch, rf_emb_tensor).view(-1)
             distances.append(dists)
         distance_matrix = torch.stack(distances)
 
@@ -805,7 +806,7 @@ def siamese_validate(val_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target
         # cal map5
         top5_matrix, map5 = cal_mapk(distance_matrix, val_target_tensor, k=5, ref_idx2class=ref_idx2class, target_idx2class=target_idx2class)
         print(f'map5 = {map5}')
-        return map5, dist_pos_max, dist_neg_min
+        return map5, top5_matrix, dist_pos_max, dist_neg_min
 
 class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
     "A `Callback` to validate SiameseNet."
@@ -819,7 +820,7 @@ class SiameseValidateCallback(fastai.callbacks.tracker.TrackerCallback):
         "Stop the training if necessary."
         print(f'Epoch {epoch} validation:')
         new_whale_idx = find_new_whale_idx(self.learn.data.train_dl.ds.y.classes)
-        map5, pos_dist_max, neg_dist_min = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl,
+        map5, top5_matrix, pos_dist_max, neg_dist_min = siamese_validate(self.learn.data.valid_dl, self.learn.model, self.learn.data.fix_dl,
                                                             pos_mask=[new_whale_idx], ref_idx2class=self.learn.data.fix_dl.ds.y,
                                                             target_idx2class=self.learn.data.valid_dl.ds.y)
         self.txlog.add_scalar('map5', map5, epoch)

@@ -150,37 +150,28 @@ data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_col
 #exit()
 
 #siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
-siamese = SiameseNetwork2(arch=arch)
+siamese = SiameseNetwork(arch=arch)
 
 # new_whale should not be involved in positive distance
 new_whale_idx = find_new_whale_idx(data.train_ds.y.classes)
+#new_whale_idx = find_new_whale_idx(data_v.valid_ds.y.classes)
 #triploss = TripletLoss(margin=0.2)
-contrastive_loss = ContrastiveLoss(margin=2.0)
+contrastive_loss = ContrastiveLoss(margin=1.0)
 
 learn = LearnerEx(data_bunch,
                   siamese,
                   enable_validate=False,
-                  #loss_func=BCEWithLogitsFlat(),
-                  loss_func=contrastive_loss,
+                  loss_func=BCEWithLogitsFlat(),
+                  #loss_func=contrastive_loss,
                   #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                   )
 
-cb_save_model = SaveModelCallback(learn, every="epoch", name=f"siamese")
-cb_siamese_validate = SiameseValidateCallback(learn, txlog)
-cbs = [cb_save_model, cb_siamese_validate]
+learn.load(f'res18-siamese-stage-2')
+learn.model.to(device)
 
-learn.freeze_to(-1)
-learn.fit_one_cycle(1)
-learn.unfreeze()
+map5, top5_matrix, pos_dist_max, neg_dist_min = siamese_validate(valid_dl, learn.model, ref_dl,
+                                                            pos_mask=[0], ref_idx2class=ref_dl.ds.y,
+                                                            target_idx2class=valid_dl.ds.y)
 
-if enable_lr_find:
-    print('LR plotting ...')
-    learn.lr_find()
-    learn.recorder.plot()
-    plt.savefig('lr_find.png')
+print(map5, pos_dist_max, neg_dist_min)
 
-max_lr = 3e-5
-#lrs = [max_lr/100, max_lr/10, max_lr]
-#learn.fit_one_cycle(300, lrs)
-learn.fit_one_cycle(300, max_lr, callbacks=cbs)
-#learn.fit_one_cycle(300, max_lr)
