@@ -6,7 +6,7 @@ import torchvision
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #some parameters
-debug = 1
+debug = 0
 enable_lr_find = 1
 now_str = now2str(format="%Y-%m-%d_%H-%M-%S")
 txlog = tx.SummaryWriter(f'../tblog/{now_str}')
