@@ -784,6 +784,38 @@ def ds_siamese_emb(dl, model, ds_with_target=True):
             embs.append(model.im2emb(data))
         return embs
 
+def cal_mat(model, data_loader1, data_loader2, ds_with_target1=True, ds_with_target2=True):
+    model.eval()
+    with torch.no_grad():
+        target1_tensor = None
+        target2_tensor = None
+        # calculate embeddings of all validation_set
+        if ds_with_target1:
+            emb1, target1 = ds_siamese_emb(data_loader1, model, ds_with_target=ds_with_target1)
+            target1_tensor = torch.cat(target1)
+        else:
+            emb1 = ds_siamese_emb(data_loader1, model, ds_with_target=ds_with_target1)
+        emb1_tensor = torch.cat(emb1)
+
+        if ds_with_target2:
+            emb2, target2 = ds_siamese_emb(data_loader2, model, ds_with_target=ds_with_target2)
+            target2_tensor = torch.cat(target2)
+        else:
+            emb2 = ds_siamese_emb(data_loader2, model, ds_with_target=ds_with_target2)
+        emb2_tensor = torch.cat(emb2)
+
+        # calculate distances between all emb1 and all emb2
+        distances = []
+        #print(f'{now2str()} calculate distance matrix')
+        for i, emb1 in enumerate(emb1_tensor):
+            #print(f'{now2str()} calculate row {i}')
+            emb1_ex = emb1.expand(emb2_tensor.shape)
+            dists = model.distance(emb1_ex, emb2_tensor)
+            #dists = model.similarity(emb1_ex, emb2_tensor).view(-1)
+            distances.append(dists)
+        distance_matrix = torch.stack(distances)
+        return distance_matrix, target1_tensor, target2_tensor
+
 
 def siamese_mat(in_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target_idx2class=[], enable_cal_dist=True):
     model.eval()
@@ -917,4 +949,19 @@ def gen_submission(top5_matrix, image_files, out_file):
     submission.to_csv(f'../submission/{out_file}.csv', index=False)
 
 
+def intersection(preds, targs):
+    # preds and targs are of shape (bs, 4), pascal_voc format
+    max_xy = torch.min(preds[:, 2:], targs[:, 2:])
+    min_xy = torch.max(preds[:, :2], targs[:, :2])
+    inter = torch.clamp((max_xy - min_xy), min=0)
+    return inter[:, 0] * inter[:, 1]
+
+def area(boxes):
+    return ((boxes[:, 2]-boxes[:, 0]) * (boxes[:, 3]-boxes[:, 1]))
+
+def union(preds, targs):
+    return area(preds) + area(targs) - intersection(preds, targs)
+
+def IoU(preds, targs):
+    return intersection(preds, targs) / union(preds, targs)
 

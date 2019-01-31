@@ -33,19 +33,19 @@ def anno2bbox(anno):
             break
     #anno = anno['annotations'][0]
     #print(file, anno)
-    return np.array([
+    return [
         np.clip(anno['y'], 0, im_height) / im_height * SZ,
         np.clip(anno['x'], 0, im_width) / im_width * SZ,
         np.clip(anno['y']+anno['height'], 0, im_height) / im_height * SZ,
         np.clip(anno['x']+anno['width'], 0, im_width) / im_width * SZ
-    ], dtype=np.float32)
+    ]
 
 fn2bbox = {jj['filename']: [[anno2bbox(jj)], ['fluke']] for jj in j}
 path2fn = lambda path: re.search('\w*\.jpg$', path).group(0)
-#get_y_func = lambda o: fn2bbox[path2fn(o)]
+get_y_func = lambda o: fn2bbox[path2fn(o)]
 
-def get_y_func(o):
-    return fn2bbox[path2fn(o)]
+#def get_y_func(o):
+#    return fn2bbox[path2fn(o)]
 
 idxs = np.arange(len(j))
 np.random.seed(0)
