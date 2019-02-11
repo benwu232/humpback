@@ -495,7 +495,7 @@ class SiameseNet(nn.Module):
         return dist
 
 
-from functional import seq
+#from functional import seq
 #original net by Radek
 class SiameseNetwork1(nn.Module):
     def __init__(self, arch=models.resnet18):
