@@ -17,6 +17,8 @@ import tensorboardX as tx
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 
+new_whale_id = 'z_new_whale'
+
 train_list_dbg = ['00050a15a.jpg', '0005c1ef8.jpg', '0006e997e.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '30eac8c9f.jpg', '3c4235ad2.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '3161ae9b9.jpg', '399533efd.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '20e7c6af4.jpg', '23acb3957.jpg', '0d5777fc2.jpg', '2885ea466.jpg', '2d43e205a.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '47d9ad983.jpg', '645300669.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '2b95bba09.jpg', '6662f0d1c.jpg']
 val_list_dbg = ['ffd61cded.jpg', 'ffdddcc0f.jpg', 'fffde072b.jpg', 'c5658abf0.jpg', 'cc6c1a235.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'b758f5366.jpg', 'b9aefbbc8.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'bdb41dba8.jpg', 'bf1eba5c2.jpg', 'cd650e905.jpg', 'b3ba738d7.jpg', 'c48bb3cbf.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'b94450f8e.jpg', 'bd3f7ba02.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', '9ae676cb0.jpg', 'a8d5237c0.jpg']
 
@@ -26,8 +28,13 @@ def now2str(format="%Y-%m-%d_%H:%M:%S"):
 
 def find_new_whale_idx(classes):
     for k, cls in enumerate(classes):
-        if cls == 'new_whale':
+        if cls == new_whale_id:
             return k
+
+def change_new_whale(df, new_name='z_new_whale'):
+    for k in range(len(df)):
+        if df.at[k, 'Id'] == 'new_whale':
+            df.at[k, 'Id'] = new_name
 
 def gen_ref_ds(ds):
     "Generate reference dataset from original dataset without new_whale"
@@ -134,7 +141,7 @@ def create_submission(preds, data, name, classes=None):
     sub.to_csv(f'subs/{name}.csv.gz', index=False, compression='gzip')
 
 
-def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1):
+def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1, new_whale_id='z_new_whale'):
     '''
     Split whale dataset to train and valid set based on k-fold idea.
     total_folds: number of total folds
@@ -151,7 +158,7 @@ def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1):
         # print(name, len(group), group.index, type(group))
         # if name == 'w_b82d0eb':
         #    print(name, df_known[df_known.Id==name])
-        if new_whale_method == 0 and name == 'new_whale':
+        if new_whale_method == 0 and name == new_whale_id:
             continue
         group_num = len(group)
         images = group.Image.values
@@ -220,27 +227,6 @@ class Class1Dataset(SimpleDataset):
         real_idx = self.class_dict[key]
         sample = self.ds[real_idx].x[0]
         return sample
-
-
-class DataLoaderTrain1(DeviceDataLoader):
-    def __post_init__(self):
-        super().__post_init__()
-        #self.mean, self.std = torch.tensor(imagenet_stats)
-        self.stats = tensor(imagenet_stats).to(device)
-
-    def proc_batch(self, b):
-        data = {}
-        for name in b[0]:
-            data[name] = []
-            for im in b[0][name]:
-                #im.show()
-                transformed = im.apply_tfms(listify(self.tfms))
-                #transformed.show()
-                normalized = torchvision.transforms.functional.normalize(transformed.data, self.stats[0], self.stats[1])
-                data[name].append(normalized)
-            data[name] = torch.stack(data[name]).to(device)
-        target = b[1].to(device)
-        return data, target
 
 
 class DataLoaderTrain(DeviceDataLoader):
@@ -317,6 +303,7 @@ def make_class_1_idx_dict(ds, ignore=[]):
 
 def make_class_idx_dict(ds, ignore=[]):
     class_idx_dict = {}
+    class_len_dict = {}
     for k, y in enumerate(ds.y):
         if y.obj in ignore:
             continue
@@ -327,18 +314,40 @@ def make_class_idx_dict(ds, ignore=[]):
 
     for idx in class_idx_dict:
         class_idx_dict[idx] = np.asarray(class_idx_dict[idx])
+        #class_idx_dict[idx] = torch.tensor(class_idx_dict[idx]).to(device)
+        #class_len_dict[idx] = torch.tensor(len(class_idx_dict[idx])).to(device)
 
     return class_idx_dict
 
+def make_class_idx_tensor(ds, ignore=[]):
+    max_len = 100
+    n_class = len(ds.y.classes)
+    class_idx = [[] for _ in range(n_class)]
+    class_idx_t = 0 - torch.ones([n_class, max_len], dtype=torch.int32)
+    for k, y in enumerate(ds.y):
+        if y.obj in ignore:
+            continue
+        class_idx[y.data].append(k)
+
+    for k in range(n_class):
+        if class_idx[k]:
+            tmp = torch.tensor(class_idx[k])
+            class_idx_t[k] = tmp.repeat(max_len)[:max_len]
+
+    class_idx_t = class_idx_t.to(device)
+    return class_idx_t
+
 class SiameseDs(torch.utils.data.Dataset):
-    def __init__(self, ds, dl):
-        self.ds = ds
+    def __init__(self, dl):
         self.dl = dl
-        self.idx2class = ds.y.items
+        self.ds = dl.dl.dataset
+        self.idx2class = self.ds.y.items
         #self.id_dict = make_id_dict(self.whale_class_dict)
-        self.class_dict = make_class_idx_dict(ds)
+        #self.class_idx_dict, self.class_len_dict = make_class_idx_dict(ds)
+        self.class_idx_dict = make_class_idx_dict(self.ds)
+        self.class_idx = make_class_idx_tensor(self.ds)
         self.len = len(self.ds)
-        self.new_whale = find_new_whale_idx(ds.y.classes)
+        self.new_whale = find_new_whale_idx(self.ds.y.classes)
 
     def __len__(self):
         return self.len
@@ -362,7 +371,7 @@ class SiameseDs(torch.utils.data.Dataset):
 
     def find_same(self, idx):
         whale_class = self.idx2class[idx]
-        class_members = self.class_dict[whale_class]
+        class_members = self.class_idx_dict[whale_class]
 
         # for 1-class or new_whale, there is no same
         if len(class_members) == 1 or whale_class == self.new_whale:
@@ -383,6 +392,7 @@ class SiameseDs(torch.utils.data.Dataset):
             if idx2 != idx1 and self.idx2class[idx2] != whale_class:
                 break
         return idx2
+
 
 
 class SiameseDsTriplet(SiameseDs):
@@ -406,6 +416,7 @@ def collate_siamese(items):
     im2_list = []
     target_list = []
 
+    #print('collate_siamese')
     for (im1, im2), target in items:
         im1_list.append(im1)
         im2_list.append(im2)
@@ -444,12 +455,180 @@ def cnn_activations_count(model, width, height):
     return ch * h * w
 
 
+class SiameseGanDs(SiameseDs):
+    def __init__(self, dl):
+        super().__init__(dl)
+
+    def __getitem__(self, idx1, idx2):
+        im1, label1 = self.dl.__getitem__(idx1)
+        im2, label2 = self.dl.__getitem__(idx2)
+        return (im1, im2), label2 == label1
+
+    def coach(self):
+        pass
+
+
+class CoachNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.batch_size = 64
+        self.hidden = 120
+        self.drop_rate = 0.5
+        self.n_cat = 5005
+        self.n_idx = 100
+        #self.embedding = nn.Embedding(self.output_size, self.hidden_size)
+        self.net1_trunk = nn.Sequential(
+                                  nn.Linear(1, self.hidden),
+                                  nn.Dropout(self.drop_rate),
+                                  nn.PReLU()
+                                  )
+
+        self.net1_cat = nn.Sequential(
+                                nn.Dropout(self.drop_rate),
+                                nn.Linear(self.hidden, self.n_cat - 1),
+                                )
+
+        self.dropout1 = nn.Dropout(self.drop_rate)
+        self.net1_idx = nn.Linear(self.hidden+self.n_cat-1, self.n_idx)
+
+
+        self.net2_trunk = nn.Sequential(
+                                  nn.Linear(self.n_idx+self.n_cat-1, self.hidden),
+                                  nn.Dropout(self.drop_rate),
+                                  nn.PReLU()
+                                  )
+
+        self.net2_cat = nn.Sequential(
+                                nn.Dropout(self.drop_rate),
+                                nn.Linear(self.hidden, self.n_cat),
+                                )
+
+        self.dropout2 = nn.Dropout(self.drop_rate)
+        self.net2_idx = nn.Linear(self.hidden+self.n_cat, self.n_idx)
+
+    def forward(self):
+        #noise = torch.randn([self.batch_size, 1], device=device)
+        #noise = torch.rand([self.batch_size, 1], device=device, requires_grad=True)
+        noise = torch.rand([self.batch_size, 1], device=device)
+        trunk1 = self.net1_trunk(noise)
+        net1_cat = self.net1_cat(trunk1)
+        mid = torch.cat([trunk1, net1_cat], dim=1)
+        mid = self.dropout1(mid)
+        net1_idx = self.net1_idx(mid)
+
+        tmp = torch.cat([net1_cat, net1_idx], dim=1)
+        trunk2 = self.net2_trunk(tmp)
+        net2_cat = self.net2_cat(trunk2)
+        mid = torch.cat([trunk2, net2_cat], dim=1)
+        mid = self.dropout2(mid)
+        net2_idx = self.net2_idx(mid)
+        return F.softmax(net1_cat, dim=1), F.softmax(net1_idx, dim=1), F.softmax(net2_cat, dim=1), F.softmax(net2_idx, dim=1)
+
+
+def linear_schedule(step, pars):
+    "Linearly output value, end_step must greater than start_step"
+    start_value = pars[0]
+    end_value = pars[1]
+    start_step = pars[2]
+    end_step = pars[3]
+    assert start_step <= end_step
+
+    if step < start_step:
+        return start_value
+    elif step >= end_step:
+        return end_value
+    return start_value - (step - start_step) * (start_value - end_value) / (end_step - start_step)
+
+linear_decay = partial(linear_schedule, pars=(1.0, 0.05, 2, 12))
+
+class CoachCallback(fastai.callbacks.tracker.TrackerCallback):
+    def __init__(self, learn, schedule_pars=(1.0, 0.05, 0, 10)):
+        super().__init__(learn)
+        self.learn = learn
+        self.schedule = partial(linear_schedule, pars=schedule_pars)
+        self.coach_net = CoachNet().to(device)
+        self.lr = 3e-4
+        self.coach_optim = torch.optim.Adam(self.coach_net.parameters(), lr=self.lr)
+
+    def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    #def on_epoch_begin(self, epoch, **kwargs: Any) -> None:
+        epsilon = self.schedule(epoch)
+        #self.learn.data.train_ds.on_epoch_end()
+
+        #lock discriminator
+        #unlock coach net
+        #train coach net
+        #lock coach net
+        #unlock discriminator
+        print('training coach_net')
+        self.coach_net.train()
+        for k in range(1):
+            cat10, idx_cat10, cat20, idx_cat20 = self.coach_net()
+            print((cat10.grad_fn, idx_cat10.grad_fn, cat20.grad_fn, idx_cat20.grad_fn))
+            cat1 = cat10.max(dim=1)[1]
+            idx_cat1 = idx_cat10.max(dim=1)[1]
+            cat2 = cat20.max(dim=1)[1]
+            idx_cat2 = idx_cat20.max(dim=1)[1]
+            #cat1 = cat1.detach()
+            #idx_cat1 = idx_cat1.detach()
+            #cat2 = cat2.detach()
+            #idx_cat2 = idx_cat2.detach()
+            img_idx1 = self.learn.data.train_ds.class_idx[cat1, idx_cat1]
+            img_idx2 = self.learn.data.train_ds.class_idx[cat2, idx_cat2]
+
+            #if cat2 is new_whale, re-pick img_idx2
+            for i, cat in enumerate(cat2):
+                if cat == self.learn.data.train_ds.new_whale:
+                    img_idx2[i] = torch.tensor(random.choice(self.learn.data.train_ds.class_idx_dict[self.learn.data.train_ds.new_whale]))
+
+
+            img_list1 = []
+            img_list2 = []
+            targets = []
+            for i in range(len(img_idx1)):
+                img1, target1 = self.learn.data.train_dl.dl.dataset.dl.__getitem__(img_idx1[i])
+                img2, target2 = self.learn.data.train_dl.dl.dataset.dl.__getitem__(img_idx2[i])
+                img_list1.append(img1.data)
+                img_list2.append(img2.data)
+                targets.append(target1==target2)
+            targets = torch.tensor(targets, dtype=torch.int32)
+            batch = [torch.stack(img_list1).to(device), torch.stack(img_list2).to(device)], targets
+            batch = normalize_batch(batch)
+
+            self.learn.model.eval()
+            with torch.no_grad():
+                dists = self.learn.model(*batch[0])
+
+            #criterion
+            #penalize wrong targets
+            dists[targets==1] = 100.0
+            self.coach_optim.zero_grad()
+            loss = 10000 * dists * (1-cat10.max(dim=1)[0]) * (1-idx_cat10.max(dim=1)[0]) * (1-cat20.max(dim=1)[0]) * (1-idx_cat20.max(dim=1)[0])
+            loss = loss.mean()
+            print(loss)
+            loss.backward()
+            self.coach_optim.step()
+            #print(img_idx1, img_idx2)
+            print(f'batch: {k}, coach_net loss: {loss.item()}')
+
+        self.coach_net.eval()
+        #return loss.detach().cpu()
+        return 0
+
+
 class SiameseNet(nn.Module):
-    def __init__(self, emb_len=128, arch=models.resnet18, width=224, height=224, diff_method=1, drop_rate=0.3):
+    def __init__(self, emb_len=256, arch=models.resnet18, forward_type='similarity', diff_method=1, drop_rate=0.5):
         super().__init__()
         self.cnn = create_body(arch)
-        self.fc1 = nn.Linear(cnn_activations_count(arch, width, height), emb_len)
-        self.fc2 = nn.Linear(emb_len, 1)
+        self.head = nn.Sequential(AdaptiveConcatPool2d(),
+                                  Flatten(),
+                                  nn.Dropout(drop_rate),
+                                  nn.PReLU(),
+                                  nn.Linear(cnn_activations_count(arch, 1, 1)*2, emb_len)
+                                  )
+
+        #self.fc1 = nn.Linear(cnn_activations_count(arch, width, height), emb_len)
+        self.fc = nn.Linear(emb_len, 1)
         self.dropout = nn.Dropout(drop_rate)
         self.diff_method = diff_method
         if self.diff_method == 1:
@@ -457,14 +636,15 @@ class SiameseNet(nn.Module):
         else:
             self.diff_vec = self.diff_vec2
 
-    def flatten(self, x):
-        return x.reshape(x.shape[0], -1)
+        self.forward_type = forward_type
+        if self.forward_type in ['similarity', 'sim']:
+            self.forward = self.forward_sim
+        elif self.forward_type in ['distance', 'dist']:
+            self.forward = self.forward_dist
 
     def im2emb(self, im):
         x = self.cnn(im)
-        x = self.flatten(x)
-        x = self.dropout(x)
-        x = self.fc1(x)
+        x = self.head(x)
         return x
 
     def diff_vec1(self, emb1, emb2):
@@ -475,48 +655,66 @@ class SiameseNet(nn.Module):
 
     def distance(self, emb1, emb2):
         return F.pairwise_distance(emb1, emb2)
+        #return self.diff_vec1(emb1, emb2).mean()
 
-    def similarity(self, dist):
-        x = self.dropout(dist)
-        logits = self.fc2(x)
+    def similarity(self, diff):
+        logits = self.fc(diff)
         return torch.sigmoid(logits)
 
-    def forward1(self, batch):
-        emb1 = self.im2emb(batch['im1'])
-        emb2 = self.im2emb(batch['im2'])
+    def forward_sim(self, im1, im2):
+        emb1 = self.im2emb(im1)
+        emb2 = self.im2emb(im2)
         diff = self.diff_vec1(emb1, emb2)
-        similarity = self.similarity(diff)
-        return similarity
+        #similarity = self.similarity(diff)
+        x = self.dropout(diff)
+        logits = self.fc(x)
+        return logits
 
-    def forward(self, im1, im2):
+    def forward_dist(self, im1, im2):
         x1 = self.im2emb(im1)
         x2 = self.im2emb(im2)
         dist = self.distance(x1, x2)
         return dist
 
-
-#from functional import seq
-#original net by Radek
-class SiameseNetwork1(nn.Module):
+class SiameseNetwork2(nn.Module):
     def __init__(self, arch=models.resnet18):
         super().__init__()
         self.cnn = create_body(arch)
-        self.head = nn.Linear(num_features_model(self.cnn), 1)
+        self.emb_len = 256
+        drop_rate = 0.5
+        self.dropout = nn.Dropout(drop_rate)
+        self.emb = nn.Linear(num_features_model(self.cnn)*2, self.emb_len)
+        self.fc = nn.Linear(self.emb_len, 1)
 
-    def forward(self, im_A, im_B):
-        # dl - distance layer
-        x1, x2 = seq(im_A, im_B).map(self.cnn).map(self.process_features)
-        dl = self.calculate_distance(x1, x2)
-        out = self.head(dl)
+    def im2emb(self, im):
+        x = self.cnn(im)
+        x = AdaptiveConcatPool2d()(x)
+        x = Flatten()(x)
+        x = self.dropout(x)
+        x = self.emb(x)
+        return x
+
+    def forward(self, im1, im2):
+        x1 = self.im2emb(im1)
+        x2 = self.im2emb(im2)
+        dl = self.diff(x1, x2)
+        dropout = self.dropout(dl)
+        out = self.fc(dropout)
         return out
 
-    def process_features(self, x):
-        return x.reshape(*x.shape[:2], -1).max(-1)[0]
+    def diff(self, x1, x2):
+        return (x1 - x2).abs()
 
-    def calculate_distance(self, x1, x2):
-        return (x1 - x2).abs_()
+    def similarity(self, x1, x2):
+        dl = self.diff(x1, x2)
+        logit = self.fc(dl)
+        return torch.sigmoid(logit)
+
+    def distance(self, emb1, emb2):
+        return F.pairwise_distance(emb1, emb2)
 
 #modified Radek's net not using seq
+#similarity
 class SiameseNetwork(nn.Module):
     def __init__(self, arch=models.resnet18):
         super().__init__()
@@ -546,29 +744,26 @@ class SiameseNetwork(nn.Module):
         logit = self.fc(dl)
         return torch.sigmoid(logit)
 
-#for contrastive loss
-class SiameseNetwork2(nn.Module):
+#from functional import seq
+#original net by Radek
+class SiameseNetwork1(nn.Module):
     def __init__(self, arch=models.resnet18):
         super().__init__()
         self.cnn = create_body(arch)
-        self.fc = nn.Linear(num_features_model(self.cnn), 1)
+        self.head = nn.Linear(num_features_model(self.cnn), 1)
 
-    def im2emb(self, im):
-        x = self.cnn(im)
-        x = self.process_features(x)
-        return x
-
-    def forward(self, im1, im2):
-        x1 = self.im2emb(im1)
-        x2 = self.im2emb(im2)
-        dist = self.distance(x1, x2)
-        return dist
+    def forward(self, im_A, im_B):
+        # dl - distance layer
+        x1, x2 = seq(im_A, im_B).map(self.cnn).map(self.process_features)
+        dl = self.calculate_distance(x1, x2)
+        out = self.head(dl)
+        return out
 
     def process_features(self, x):
         return x.reshape(*x.shape[:2], -1).max(-1)[0]
 
-    def distance(self, x1, x2):
-        return (x1 - x2).abs().mean(dim=1)
+    def calculate_distance(self, x1, x2):
+        return (x1 - x2).abs_()
 
 
 class SiameseNetTriplet(nn.Module):
@@ -734,20 +929,87 @@ class TripletLoss(nn.Module):
         return loss
 
 
+contrastive_neg_margin = 10.0
+
+class ContrastiveLoss2(nn.Module):
+    """
+    Contrastive loss
+    Takes embeddings of two samples and a target label == 1 if samples are from the same class and label == 0 otherwise
+    """
+    def __init__(self, margin=10.0, reduction='mean'):
+        super().__init__()
+        self.margin = margin
+        self.eps = 1e-9
+        self.reduction = reduction
+
+    def forward(self, distances, targets):
+        losses = torch.mean(targets.float() * torch.pow(distances, 2) + (1-targets).float() * torch.pow(torch.relu(self.margin - distances), 2))
+        if self.reduction == 'mean':
+            return losses.mean()
+        elif self.reduction == 'sum':
+            return losses.sum()
+        else:
+            return losses
+
+
+
 class ContrastiveLoss(nn.Module):
     """
     Contrastive loss
     Takes embeddings of two samples and a target label == 1 if samples are from the same class and label == 0 otherwise
     """
-    def __init__(self, margin):
+    def __init__(self, margin=10.0, reduction='mean'):
+        super().__init__()
+        self.margin = margin
+        self.eps = 1e-9
+        self.reduction = reduction
+
+    def forward(self, distances, target):
+        pos_loss = distances[target==1]
+        neg_dist = distances[target==0]
+        neg_loss = torch.relu(self.margin - neg_dist)
+        losses = torch.cat([pos_loss, neg_loss])
+        losses = losses[losses!=0]
+
+        #losses = target.float() * distances + (1 - target).float() * torch.relu(self.margin - distances)
+        if self.reduction == 'mean':
+            return losses.mean()
+        elif self.reduction == 'sum':
+            return losses.sum()
+        else:
+            return losses
+
+
+class ContrastiveLoss1(nn.Module):
+    """
+    Contrastive loss
+    Takes embeddings of two samples and a target label == 1 if samples are from the same class and label == 0 otherwise
+    """
+    def __init__(self, margin=10.0, reduction='mean'):
         super(ContrastiveLoss, self).__init__()
         self.margin = margin
         self.eps = 1e-9
+        self.reduction = reduction
 
-    def forward(self, distances, target, size_average=True):
+    def forward(self, distances, target):
         losses = target.float() * distances + (1 - target).float() * torch.relu(self.margin - distances)
-        return losses.mean() if size_average else losses.sum()
+        if self.reduction == 'mean':
+            return losses.mean()
+        elif self.reduction == 'sum':
+            return losses.sum()
+        else:
+            return losses
 
+
+def avg_pos(preds, targets):
+    pos_dist = preds[targets==1]
+    pos_dist = pos_dist[pos_dist!=0]
+    return pos_dist.mean()
+
+def avg_neg(preds, targets):
+    neg_dist = preds[targets==0]
+    neg_dist = neg_dist[neg_dist!=0]
+    return contrastive_neg_margin - neg_dist.mean()
 
 def normalize_batch(batch):
     stat_tensors = [torch.tensor(l).to(device) for l in imagenet_stats]
@@ -810,7 +1072,7 @@ def cal_mat(model, data_loader1, data_loader2, ds_with_target1=True, ds_with_tar
         for i, emb1 in enumerate(emb1_tensor):
             #print(f'{now2str()} calculate row {i}')
             emb1_ex = emb1.expand(emb2_tensor.shape)
-            dists = model.distance(emb1_ex, emb2_tensor)
+            dists = model.diff(emb1_ex, emb2_tensor)
             #dists = model.similarity(emb1_ex, emb2_tensor).view(-1)
             distances.append(dists)
         distance_matrix = torch.stack(distances)
@@ -838,7 +1100,7 @@ def siamese_mat(in_dl, model, rf_dl, pos_mask=[], ref_idx2class=[], target_idx2c
             #print(f'{now2str()} calculate row {i}')
             distance_list = []
             val_emb_batch = val_emb.expand(rf_emb_tensor.shape)
-            dists = model.distance(val_emb_batch, rf_emb_tensor)
+            dists = model.diff(val_emb_batch, rf_emb_tensor)
             #dists = model.similarity(val_emb_batch, rf_emb_tensor).view(-1)
             distances.append(dists)
         distance_matrix = torch.stack(distances)

@@ -123,7 +123,7 @@ data = (
 #data.add_tfm(normalize_batch)
 
 train_dl = DataLoader(
-    SiameseDs(data.train_ds, data.train_dl),
+    SiameseDs(data.train_dl),
     batch_size=train_batch_size,
     shuffle=True,
     #collate_fn=siamese_collate,

@@ -80,7 +80,7 @@ data = (
 data.add_tfm(normalize_batch)
 
 train_dl = DataLoader(
-    SiameseDs(data.train_ds),
+    SiameseDs(data.train_dl),
     batch_size=train_batch_size,
     shuffle=True,
     #collate_fn=siamese_collate,
@@ -177,8 +177,8 @@ data_bunch.fix_dl = DataLoaderVal(ref_dl, device, tfms=None, collate_fn=data_col
 #
 #exit()
 
-#siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
-siamese = SiameseNetwork(arch=arch)
+siamese = SiameseNet(emb_len, arch=arch, width=im_size, height=im_size, diff_method=diff_method)
+#siamese = SiameseNetwork(arch=arch)
 
 # new_whale should not be involved in positive distance
 new_whale_idx = find_new_whale_idx(data.train_ds.y.classes)
