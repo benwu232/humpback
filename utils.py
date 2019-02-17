@@ -4,7 +4,8 @@ import pandas as pd
 import torch
 from copy import deepcopy
 import datetime as dt
-
+import time
+import tqdm
 import fastai
 from fastai.vision import *
 from fastai.basic_data import *
@@ -456,24 +457,56 @@ def cnn_activations_count(model, width, height):
 
 
 class SiameseGanDs(SiameseDs):
-    def __init__(self, dl):
+    def __init__(self, dl, coach_que):
         super().__init__(dl)
+        self.batch_size = dl.batch_size
+        self.coach_que = coach_que
+        self.dl = dl
+        self.img_list1 = []
+        self.img_list2 = []
+        self.targets = []
 
-    def __getitem__(self, idx1, idx2):
-        im1, label1 = self.dl.__getitem__(idx1)
-        im2, label2 = self.dl.__getitem__(idx2)
-        return (im1, im2), label2 == label1
+    def __getitem__(self, idx):
+        pn_idx = idx % self.batch_size
+        #generate a batch of pos-neg pairs
+        if pn_idx == 0:
+            img_idxes1, img_idxes2 = self.coach_que.get()
+            self.img_list1 = []
+            self.img_list2 = []
+            self.targets = []
+            for k, (img_idx1, img_idx2) in enumerate(zip(img_idxes1, img_idxes2)):
+                if k >= self.batch_size // 2:
+                    break
+                img1, target1 = self.dl.__getitem__(img_idx1)
+                img2, target2 = self.dl.__getitem__(img_idx2)
+                if target1 == target2:
+                    continue
+                self.img_list1.append(img1.data)
+                self.img_list2.append(img2.data)
+                self.targets.append(target1==target2)
 
-    def coach(self):
-        pass
+        if pn_idx < self.batch_size // 2:
+            return (self.img_list1[pn_idx], self.img_list2[pn_idx]), 0
+        else:
+            self.img_list1 = []
+            self.img_list2 = []
+            self.targets = []
+            while True:
+                pp_idx = np.random.randint(self.len)
+                idx_p, pos_valid = self.find_same(pp_idx)
+                if pos_valid:
+                    im1, label1 = self.dl.__getitem__(pp_idx)
+                    im2, label2 = self.dl.__getitem__(idx_p)
+                    #print(label1.obj, label2.obj)
+                    assert label1.obj == label2.obj
+                    return (im1, im2), 1
 
 
-class CoachNet(nn.Module):
-    def __init__(self):
+class CoachNet1(nn.Module):
+    def __init__(self, hidden=120, drop_rate=0.5):
         super().__init__()
-        self.batch_size = 64
-        self.hidden = 120
-        self.drop_rate = 0.5
+        self.hidden = hidden
+        self.drop_rate = drop_rate
         self.n_cat = 5005
         self.n_idx = 100
         #self.embedding = nn.Embedding(self.output_size, self.hidden_size)
@@ -506,10 +539,10 @@ class CoachNet(nn.Module):
         self.dropout2 = nn.Dropout(self.drop_rate)
         self.net2_idx = nn.Linear(self.hidden+self.n_cat, self.n_idx)
 
-    def forward(self):
+    def forward(self, batch_size):
         #noise = torch.randn([self.batch_size, 1], device=device)
         #noise = torch.rand([self.batch_size, 1], device=device, requires_grad=True)
-        noise = torch.rand([self.batch_size, 1], device=device)
+        noise = torch.rand([batch_size, 1], device=device)
         trunk1 = self.net1_trunk(noise)
         net1_cat = self.net1_cat(trunk1)
         mid = torch.cat([trunk1, net1_cat], dim=1)
@@ -523,6 +556,133 @@ class CoachNet(nn.Module):
         mid = self.dropout2(mid)
         net2_idx = self.net2_idx(mid)
         return F.softmax(net1_cat, dim=1), F.softmax(net1_idx, dim=1), F.softmax(net2_cat, dim=1), F.softmax(net2_idx, dim=1)
+
+def onehot_enc(labels, n_class=10):
+    onehot = torch.zeros([len(labels), n_class], dtype=torch.float32).to(device)
+    #onehot.scatter_(dim=1, index=ids, src=1)
+    onehot.scatter_(1, labels.view(-1, 1), 1.0)
+    return onehot
+
+class CoachNet(nn.Module):
+    def __init__(self, hidden=300, drop_rate=0.5):
+        super().__init__()
+        self.hidden = hidden
+        self.drop_rate = drop_rate
+        self.n_cat = 5005
+        self.n_idx = 100
+        #self.embedding = nn.Embedding(self.output_size, self.hidden_size)
+        self.net1_trunk = nn.Sequential(
+                                  nn.Linear(1, self.hidden),
+                                  nn.Dropout(self.drop_rate),
+                                  nn.PReLU()
+                                  )
+
+        self.net1_cat = nn.Sequential(
+                                nn.Dropout(self.drop_rate),
+                                nn.Linear(self.hidden, self.n_cat - 1),
+                                )
+
+        self.dropout1 = nn.Dropout(self.drop_rate)
+        self.net1_idx = nn.Linear(self.hidden+self.n_cat, self.n_idx)
+
+        self.net2_trunk = nn.Sequential(
+                                  nn.Linear(self.n_idx+self.n_cat-1, self.hidden),
+                                  nn.Dropout(self.drop_rate),
+                                  nn.PReLU()
+                                  )
+
+        self.net2_cat = nn.Sequential(
+                                nn.Dropout(self.drop_rate),
+                                nn.Linear(self.hidden, self.n_cat),
+                                )
+
+        self.dropout2 = nn.Dropout(self.drop_rate)
+        self.net2_idx = nn.Linear(self.hidden+self.n_cat, self.n_idx)
+
+    def forward(self, batch_size):
+        noise = torch.rand(1, device=device)
+        #noise = torch.randn(1, device=device)
+        trunk1 = self.net1_trunk(noise)
+        net1_cat = self.net1_cat(trunk1)
+        net1_cat = F.softmax(net1_cat, dim=0)
+        net1_cat_topk, net1_cat_topk_idxes = net1_cat.topk(batch_size)
+        cat1_sparse = onehot_enc(net1_cat_topk_idxes, self.n_cat-1) * net1_cat
+
+        mid = torch.cat([trunk1, net1_cat])
+        mid = mid.expand(batch_size, mid.shape[0])
+        mid = self.dropout1(mid)
+        mid_ex = torch.cat([net1_cat_topk.view(-1, 1), mid], dim=1)
+        net1_idx = self.net1_idx(mid_ex)
+        net1_idx = F.softmax(net1_idx, dim=1)
+        net1_idx_max_value, net1_idx_max_idx = net1_idx.max(dim=1)
+        net1_idx_sparse = onehot_enc(net1_idx_max_idx, 100) * net1_idx_max_value.view(-1, 1)
+
+
+        tmp = torch.cat([cat1_sparse, net1_idx_sparse], dim=1)
+        trunk2 = self.net2_trunk(tmp)
+        net2_cat = self.net2_cat(trunk2)
+        net2_cat = F.softmax(net2_cat, dim=0)
+        mid = torch.cat([trunk2, net2_cat], dim=1)
+        mid = self.dropout2(mid)
+        net2_idx = self.net2_idx(mid)
+        net2_idx = F.softmax(net2_idx, dim=0)
+
+        #print(net1_cat.shape, net1_idx.shape, net2_cat.shape, net2_idx.shape)
+
+        return net1_cat_topk, net1_cat_topk_idxes, net1_idx, net2_cat, net2_idx
+
+
+lock = torch.multiprocessing.Lock()
+
+class Coach(object):
+    def __init__(self, learn=None, batch_size=64, n_batch=10):
+        self.coach_net = CoachNet()
+        self.coach_net.to(device)
+        self.batch_size = batch_size
+        self.n_batch = n_batch
+        self.que = torch.multiprocessing.Queue(maxsize=n_batch)
+        self.learn = learn
+
+    def get_que(self):
+        return self.que
+
+    def gen_batchs1(self, n_batch=None):
+        if n_batch is None:
+            n_batch = self.n_batch
+
+        self.coach_net.eval()
+        with torch.no_grad():
+            for _ in range(n_batch):
+                batch = self.coach_net(self.batch_size)
+                self.que.put(batch)
+
+    def gen_batchs(self, n_batch=None):
+        if n_batch is None:
+            n_batch = self.n_batch
+
+        self.coach_net.eval()
+        with torch.no_grad():
+            for k in range(n_batch):
+                #if k % 100 == 0:
+                #    print(k, n_batch)
+                cat1_topk, cat1_topk_idx, cat1_idx, cat2, cat2_idx = self.coach_net(self.learn.data.train_dl.batch_size)
+                #print((cat10.grad_fn, idx_cat10.grad_fn, cat20.grad_fn, idx_cat20.grad_fn))
+                cat1_idx_argmax = cat1_idx.max(dim=1)[1]
+                cat2_argmax = cat2.max(dim=1)[1]
+                cat2_idx_argmax = cat2_idx.max(dim=1)[1]
+                img_idx1 = self.learn.data.train_ds.class_idx[cat1_topk_idx, cat1_idx_argmax]
+                img_idx2 = self.learn.data.train_ds.class_idx[cat2_argmax, cat2_idx_argmax]
+
+                #if cat2 is new_whale, re-pick img_idx2
+                for i, cat in enumerate(cat2_argmax):
+                    if cat == self.learn.data.train_ds.new_whale:
+                        img_idx2[i] = torch.tensor(random.choice(self.learn.data.train_ds.class_idx_dict[self.learn.data.train_ds.new_whale]))
+
+                img_list1 = img_idx1.tolist()
+                img_list2 = img_idx2.tolist()
+                self.que.put([img_list1, img_list2], block=False)
+        print(img_list1[:10])
+        print(img_list2[:10])
 
 
 def linear_schedule(step, pars):
@@ -541,17 +701,18 @@ def linear_schedule(step, pars):
 
 linear_decay = partial(linear_schedule, pars=(1.0, 0.05, 2, 12))
 
-class CoachCallback(fastai.callbacks.tracker.TrackerCallback):
+class CoachTrainCallback(fastai.callbacks.tracker.TrackerCallback):
     def __init__(self, learn, schedule_pars=(1.0, 0.05, 0, 10)):
         super().__init__(learn)
         self.learn = learn
         self.schedule = partial(linear_schedule, pars=schedule_pars)
-        self.coach_net = CoachNet().to(device)
-        self.lr = 3e-4
-        self.coach_optim = torch.optim.Adam(self.coach_net.parameters(), lr=self.lr)
+        self.coach_net = learn.coach_net
+        self.coach_optim = learn.coach_optim
+        self.coach = learn.coach
 
-    def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-    #def on_epoch_begin(self, epoch, **kwargs: Any) -> None:
+    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    #def on_epoch_end(self, epoch, **kwargs: Any) -> None:
+    def on_epoch_begin(self, epoch, **kwargs: Any) -> None:
         epsilon = self.schedule(epoch)
         #self.learn.data.train_ds.on_epoch_end()
 
@@ -563,24 +724,22 @@ class CoachCallback(fastai.callbacks.tracker.TrackerCallback):
         print('training coach_net')
         self.coach_net.train()
         for k in range(1):
-            cat10, idx_cat10, cat20, idx_cat20 = self.coach_net()
-            print((cat10.grad_fn, idx_cat10.grad_fn, cat20.grad_fn, idx_cat20.grad_fn))
-            cat1 = cat10.max(dim=1)[1]
-            idx_cat1 = idx_cat10.max(dim=1)[1]
-            cat2 = cat20.max(dim=1)[1]
-            idx_cat2 = idx_cat20.max(dim=1)[1]
+            cat1_topk, cat1_topk_idx, cat1_idx, cat2, cat2_idx = self.coach_net(self.learn.data.train_dl.batch_size)
+            #print((cat10.grad_fn, idx_cat10.grad_fn, cat20.grad_fn, idx_cat20.grad_fn))
+            cat1_idx_argmax = cat1_idx.max(dim=1)[1]
+            cat2_argmax = cat2.max(dim=1)[1]
+            cat2_idx_argmax = cat2_idx.max(dim=1)[1]
             #cat1 = cat1.detach()
             #idx_cat1 = idx_cat1.detach()
             #cat2 = cat2.detach()
             #idx_cat2 = idx_cat2.detach()
-            img_idx1 = self.learn.data.train_ds.class_idx[cat1, idx_cat1]
-            img_idx2 = self.learn.data.train_ds.class_idx[cat2, idx_cat2]
+            img_idx1 = self.learn.data.train_ds.class_idx[cat1_topk_idx, cat1_idx_argmax]
+            img_idx2 = self.learn.data.train_ds.class_idx[cat2_argmax, cat2_idx_argmax]
 
             #if cat2 is new_whale, re-pick img_idx2
-            for i, cat in enumerate(cat2):
+            for i, cat in enumerate(cat2_argmax):
                 if cat == self.learn.data.train_ds.new_whale:
                     img_idx2[i] = torch.tensor(random.choice(self.learn.data.train_ds.class_idx_dict[self.learn.data.train_ds.new_whale]))
-
 
             img_list1 = []
             img_list2 = []
@@ -603,16 +762,19 @@ class CoachCallback(fastai.callbacks.tracker.TrackerCallback):
             #penalize wrong targets
             dists[targets==1] = 100.0
             self.coach_optim.zero_grad()
-            loss = 10000 * dists * (1-cat10.max(dim=1)[0]) * (1-idx_cat10.max(dim=1)[0]) * (1-cat20.max(dim=1)[0]) * (1-idx_cat20.max(dim=1)[0])
+            loss = 10000 * dists * (1-cat1_topk) * (1-cat1_idx.max(dim=1)[0]) * (1-cat2.max(dim=1)[0]) * (1-cat2_idx.max(dim=1)[0])
             loss = loss.mean()
-            print(loss)
             loss.backward()
             self.coach_optim.step()
             #print(img_idx1, img_idx2)
-            print(f'batch: {k}, coach_net loss: {loss.item()}')
+        print(f'batch: {k}, coach_net loss: {loss.item()}')
 
-        self.coach_net.eval()
-        #return loss.detach().cpu()
+        #clear the queue
+        while not self.coach.que.empty():
+            self.coach.que.get()
+        #fill the queue
+        self.coach.gen_batchs()
+
         return 0
 
 
