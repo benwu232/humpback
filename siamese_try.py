@@ -149,8 +149,8 @@ data = (
 data.add_tfm(normalize_batch)
 
 train_dl = DataLoader(
-    SiameseGanDs(data.train_dl, coach.get_que()),
-    #SiameseDs(data.train_dl),
+    #SiameseGanDs(data.train_dl, coach.get_que()),
+    SiameseDs(data.train_dl),
     batch_size=train_batch_size,
     shuffle=False,
     #collate_fn=collate_siamese,
@@ -211,10 +211,10 @@ learn.split([learn.model.cnn[:6], learn.model.cnn[6:], learn.model.fc])
 
 from fastai.callbacks import SaveModelCallback
 cb_save_model = SaveModelCallback(learn, every="epoch", name=name)
-cb_coach = CbCoachTrain(learn)
+#cb_coach = CoachTrainCallback(learn)
 cb_dists = CbDists(learn)
 #cb_siamese_validate = SiameseValidateCallback(learn, txlog)
-cbs = [cb_save_model, cb_coach, cb_dists]#, cb_siamese_validate]
+cbs = [cb_save_model, cb_dists]#, cb_siamese_validate]
 
 
 # In[14]:

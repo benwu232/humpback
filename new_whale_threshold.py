@@ -85,6 +85,7 @@ USE_CUDA = torch.cuda.is_available()
 #device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 device = torch.device("cuda" if USE_CUDA else "cpu")
 
+debug = 0
 
 # In[5]:
 
@@ -130,52 +131,42 @@ coach = Coach(learn=None, n_batch=313, batch_size=train_batch_size)
 
 im_tfms = get_transforms(do_flip=False, max_zoom=1, max_warp=0, max_rotate=2)
 
-data = (
-    ImageItemList
-        # .from_df(df_known, 'data/train', cols=['Image'])
-        .from_folder(train_path)
-        # .split_by_idxs(train_item_list, val_item_list)
-        .split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
-        # .split_by_idx(val_list)
-        # .random_split_by_pct(seed=SEED)
-        .label_from_func(lambda path: fn2label[path2fn(str(path))])
-        #.add_test(ImageItemList.from_folder(test_path))
-        #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
-        .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
-        .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
-        #.normalize(imagenet_stats)
-)
 
-data.add_tfm(normalize_batch)
+if debug:
+    df0 = df0[:1000]
+    dl_workers = 0
+    data = (
+        ImageItemList
+            .from_df(df0, train_path, cols=['Image'])
+            #.from_folder(train_path)
+            # .split_by_idxs(train_item_list, val_item_list)
+            .split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
+            # .split_by_idx(val_list)
+            # .random_split_by_pct(seed=SEED)
+            .label_from_func(lambda path: fn2label[path2fn(str(path))])
+            #.add_test(ImageItemList.from_folder(test_path))
+            #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
+            .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
+            .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
+            .normalize(imagenet_stats)
+    )
 
-train_dl = DataLoader(
-    SiameseGanDs(data.train_dl, coach.get_que()),
-    #SiameseDs(data.train_dl),
-    batch_size=train_batch_size,
-    shuffle=False,
-    #collate_fn=collate_siamese,
-    num_workers=dl_workers
-)
-
-val_dl = DataLoader(
-    SiameseDs(data.valid_dl),
-    #SiameseDs(data.valid_dl),
-    batch_size=val_batch_size,
-    shuffle=False,
-    #collate_fn=collate_siamese,
-    num_workers=dl_workers
-)
-
-
-# In[9]:
-
-
-#train_bunch = ImageDataBunch(train_dl, val_dl, collate_fn=collate_siamese, device=device)
-train_bunch = ImageDataBunch(train_dl, val_dl, device=device)
-
-
-# In[10]:
-
+else:
+    data = (
+        ImageItemList
+            # .from_df(df_known, 'data/train', cols=['Image'])
+            .from_folder(train_path)
+            # .split_by_idxs(train_item_list, val_item_list)
+            .split_by_valid_func(lambda path: path2fn(str(path)) in val_list)
+            # .split_by_idx(val_list)
+            # .random_split_by_pct(seed=SEED)
+            .label_from_func(lambda path: fn2label[path2fn(str(path))])
+            #.add_test(ImageItemList.from_folder(test_path))
+            #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
+            .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
+            .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
+            .normalize(imagenet_stats)
+    )
 
 #siamese = SiameseNetwork(arch=arch)
 #siamese = SiameseNet(emb_len=emb_len, arch=arch, forward_type='similarity', drop_rate=0.5)
@@ -187,7 +178,7 @@ siamese.to(device)
 # In[11]:
 
 
-learn = Learner(train_bunch,
+learn = Learner(data,
                   siamese,
                   #enable_validate=True,
                   path=learn_path,
@@ -197,66 +188,15 @@ learn = Learner(train_bunch,
                   #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                   )
 
-learn.coach_net = coach.coach_net
-learn.coach_optim = torch.optim.Adam(learn.coach_net.parameters(), lr=1e-4)
-learn.coach = coach
-learn.coach.learn = learn
 
+learn.load(f'{name}_80')
 
-learn.split([learn.model.cnn[:6], learn.model.cnn[6:], learn.model.fc])
+dist_mat, val_target, _ = cal_mat(learn.model, data.valid_dl, data.fix_dl, ds_with_target1=True, ds_with_target2=True)
 
+for threshold in np.linspace(1, 9, 30):
+    top5_matrix, map5 = cal_mapk(dist_mat, val_target, k=5, threshold=threshold, ref_idx2class=learn.data.fix_dl.y, target_idx2class=learn.data.valid_dl.y)
+    print(threshold, map5)
 
-# In[13]:
-
-
-from fastai.callbacks import SaveModelCallback
-cb_save_model = SaveModelCallback(learn, every="epoch", name=name)
-cb_coach = CbCoachTrain(learn)
-cb_dists = CbDists(learn)
-#cb_siamese_validate = SiameseValidateCallback(learn, txlog)
-cbs = [cb_save_model, cb_coach, cb_dists]#, cb_siamese_validate]
-
-
-# In[14]:
-
-
-learn.freeze_to(-1)
-learn.fit_one_cycle(3, callbacks=cbs)
-learn.unfreeze()
-
-
-# In[15]:
-
-
-enable_lr_find = 0
-if enable_lr_find:
-    print('LR plotting ...')
-    learn.lr_find()
-    learn.recorder.plot()
-    plt.savefig('lr_find.png')
-
-
-# In[16]:
-
-
-max_lr = 1e-4
-lrs = [max_lr/20, max_lr/5, max_lr]
-learn.fit_one_cycle(100, lrs, callbacks=cbs)
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
 
 
 

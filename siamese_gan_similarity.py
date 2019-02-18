@@ -123,7 +123,6 @@ fn2label = {row[1].Image: row[1].Id for row in df0.iterrows()}
 class_dict = make_whale_class_dict(df0)
 file_lut = df0.set_index('Image').to_dict()
 
-coach = Coach(learn=None, n_batch=313, batch_size=train_batch_size)
 
 # In[8]:
 
@@ -147,6 +146,8 @@ data = (
 )
 
 data.add_tfm(normalize_batch)
+
+coach = Coach(learn=None, n_batch=313, batch_size=train_batch_size, ds_len=len(data.train_ds))
 
 train_dl = DataLoader(
     SiameseGanDs(data.train_dl, coach.get_que()),
@@ -177,9 +178,7 @@ train_bunch = ImageDataBunch(train_dl, val_dl, device=device)
 # In[10]:
 
 
-#siamese = SiameseNetwork(arch=arch)
-#siamese = SiameseNet(emb_len=emb_len, arch=arch, forward_type='similarity', drop_rate=0.5)
-siamese = SiameseNet(emb_len=emb_len, arch=arch, forward_type='distance', drop_rate=0.5)
+siamese = SiameseNet(emb_len=emb_len, arch=arch, forward_type='similarity', drop_rate=0.5)
 #siamese = SiameseNetwork2(arch=arch)
 siamese.to(device)
 
@@ -191,9 +190,8 @@ learn = Learner(train_bunch,
                   siamese,
                   #enable_validate=True,
                   path=learn_path,
-                  #loss_func=BCEWithLogitsFlat(),
-                  loss_func=ContrastiveLoss(margin=contrastive_neg_margin),
-                  metrics=[avg_pos_dist, avg_neg_dist]
+                  loss_func=BCEWithLogitsFlat(),
+                  metrics=[avg_pos_sim, avg_neg_sim]
                   #metrics=[lambda preds, targs: accuracy_thresh(preds.squeeze(), targs, sigmoid=False)]
                   )
 
@@ -201,6 +199,7 @@ learn.coach_net = coach.coach_net
 learn.coach_optim = torch.optim.Adam(learn.coach_net.parameters(), lr=1e-4)
 learn.coach = coach
 learn.coach.learn = learn
+learn.enable_coach = True
 
 
 learn.split([learn.model.cnn[:6], learn.model.cnn[6:], learn.model.fc])
@@ -211,10 +210,10 @@ learn.split([learn.model.cnn[:6], learn.model.cnn[6:], learn.model.fc])
 
 from fastai.callbacks import SaveModelCallback
 cb_save_model = SaveModelCallback(learn, every="epoch", name=name)
-cb_coach = CbCoachTrain(learn)
-cb_dists = CbDists(learn)
+cb_coach = CbCoachTrain(learn, n_train_batch=10)
+cb_sims = CbSims(learn)
 #cb_siamese_validate = SiameseValidateCallback(learn, txlog)
-cbs = [cb_save_model, cb_coach, cb_dists]#, cb_siamese_validate]
+cbs = [cb_save_model, cb_coach, cb_sims]#, cb_siamese_validate]
 
 
 # In[14]:
