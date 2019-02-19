@@ -89,10 +89,14 @@ device = torch.device("cuda" if USE_CUDA else "cpu")
 # In[5]:
 
 
-#name = f'siamese_resnet34_224'
-#arch = models.resnet34
-name = f'siamese_resnet18_224'
-arch = models.resnet18
+#name = f'siamese_densenet121_224'
+#arch = models.densenet121
+#name = f'siamese_resnet50_224'
+#arch = models.resnet50
+name = f'siamese_resnet34_224'
+arch = models.resnet34
+#name = f'siamese_resnet18_224'
+#arch = models.resnet18
 
 im_size = 224
 train_batch_size = 64
@@ -210,7 +214,7 @@ learn.split([learn.model.cnn[:6], learn.model.cnn[6:], learn.model.fc])
 
 from fastai.callbacks import SaveModelCallback
 cb_save_model = SaveModelCallback(learn, every="epoch", name=name)
-cb_coach = CbCoachTrain(learn, n_train_batch=10)
+cb_coach = CbCoachTrain(learn, n_train_batch=20)
 cb_sims = CbSims(learn)
 #cb_siamese_validate = SiameseValidateCallback(learn, txlog)
 cbs = [cb_save_model, cb_coach, cb_sims]#, cb_siamese_validate]

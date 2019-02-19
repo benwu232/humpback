@@ -1349,20 +1349,14 @@ def avg_neg_dist(preds, targets):
     return pn_loss.mean()
 
 def avg_pos_sim(preds, targets):
-    preds = torch.sigmoid(preds)
+    preds = torch.sigmoid(preds.detach())
     pp_loss = preds[targets==1]
-    if pp_loss:
-        return pp_loss.mean()
-    else:
-        return 0
+    return pp_loss.mean()
 
 def avg_neg_sim(preds, targets):
-    preds = torch.sigmoid(preds)
+    preds = torch.sigmoid(preds.detach())
     pn_loss = preds[targets==0]
-    if pn_loss:
-        return pn_loss.mean()
-    else:
-        return 0
+    return pn_loss.mean()
 
 def normalize_batch(batch):
     stat_tensors = [torch.tensor(l).to(device) for l in imagenet_stats]
@@ -1397,14 +1391,22 @@ class CbSims(fastai.callbacks.tracker.TrackerCallback):
         self.momentum = 0.95
 
     def on_epoch_begin(self, **kwargs):
-        self.pp_similarity = 1
-        self.pn_similarity = 0
+        #self.pp_similarity = 1
+        #self.pn_similarity = 0
         self.momentum = 0.95
+        #self.cnt = 0
 
     def on_batch_end(self, last_output, last_target, **kwargs):
-        self.pp_similarity = self.momentum * self.pp_similarity + (1 - self.momentum) * avg_pos_sim(last_output, last_target)
-        self.pn_similarity = self.momentum * self.pn_similarity + (1 - self.momentum) * avg_neg_sim(last_output, last_target)
-        #print(f'pp_similarity: {self.pp_similarity}, pn_similarity: {self.pn_similarity}')
+        pos_sim = avg_pos_sim(last_output, last_target)
+        if not torch.isnan(pos_sim):
+            self.pp_similarity = self.momentum * self.pp_similarity + (1 - self.momentum) * pos_sim
+
+        neg_sim = avg_neg_sim(last_output, last_target)
+        if not torch.isnan(neg_sim):
+            self.pn_similarity = self.momentum * self.pn_similarity + (1 - self.momentum) * neg_sim
+
+        #self.cnt += 1
+        #print(f'{self.cnt}, pp_similarity: {self.pp_similarity}, pn_similarity: {self.pn_similarity}')
 
     def on_epoch_end(self, **kwargs):
         print(f'pp_similarity: {self.pp_similarity}, pn_similarity: {self.pn_similarity}')
