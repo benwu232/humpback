@@ -198,39 +198,6 @@ class ImageItemListEx(ImageItemList):
         return self
 
 
-class SimpleDataset(Dataset):
-    'Characterizes a dataset for PyTorch'
-
-    def __init__(self, ds):
-        'Initialization'
-        self.ds = ds
-
-    def __len__(self):
-        'Denotes the total number of samples'
-        return len(self.ds)
-
-    def __getitem__(self, index):
-        sample = self.ds[index]
-        if isinstance(sample, tuple):
-        #if len(sample) == 2:
-            return sample[0], sample[1]
-        else:
-            return sample
-
-
-class Class1Dataset(SimpleDataset):
-    def __init__(self, ds, class_dict):
-        super().__init__(ds)
-        self.class_dict = class_dict
-        self.keys = sorted(list(self.class_dict.keys()))
-
-    def __getitem__(self, index):
-        key = self.keys[index]
-        real_idx = self.class_dict[key]
-        sample = self.ds[real_idx].x[0]
-        return sample
-
-
 class DataLoaderTrain(DeviceDataLoader):
     def __post_init__(self):
         super().__post_init__()
@@ -339,6 +306,27 @@ def make_class_idx_tensor(ds, ignore=[]):
     class_idx_t = class_idx_t.to(device)
     return class_idx_t
 
+
+class SimpleDataset(Dataset):
+    'Characterizes a dataset for PyTorch'
+
+    def __init__(self, ds):
+        'Initialization'
+        self.ds = ds
+
+    def __len__(self):
+        'Denotes the total number of samples'
+        return len(self.ds)
+
+    def __getitem__(self, index):
+        sample = self.ds[index]
+        if isinstance(sample, tuple):
+        #if len(sample) == 2:
+            return sample[0], sample[1]
+        else:
+            return sample
+
+
 class SiameseDs(torch.utils.data.Dataset):
     def __init__(self, dl):
         self.dl = dl
@@ -395,6 +383,26 @@ class SiameseDs(torch.utils.data.Dataset):
                 break
         return idx2
 
+
+class SiameseDs3(SiameseDs):
+    def __init__(self, dl):
+        super().__init__(dl)
+
+    def __getitem__(self, idx):
+        while True:
+            idx_p, pos_valid = self.find_same(idx)
+            if pos_valid:
+                im1, label1 = self.dl.__getitem__(idx)
+                im2, label2 = self.dl.__getitem__(idx_p)
+                assert label1.obj == label2.obj
+                break
+                #return [im1, im2], [label1, label2]
+            else:
+                idx = np.random.randint(self.len)
+
+        idx_n = self.find_different(idx)
+        im3, label3 = self.dl.__getitem__(idx_n)
+        return [im1, im2, im3], [label1, label2, label3]
 
 
 class SiameseDsTriplet(SiameseDs):
@@ -944,7 +952,7 @@ class CbCoachTrain(fastai.callbacks.tracker.TrackerCallback):
         return 0
 
 
-class SiameseNet(nn.Module):
+class SiameseNet1(nn.Module):
     def __init__(self, emb_len=256, arch=models.resnet18, forward_type='similarity', diff_method=1, drop_rate=0.5):
         super().__init__()
         self.cnn = create_body(arch)
@@ -1010,6 +1018,44 @@ class SiameseNet(nn.Module):
         x2 = self.im2emb(im2)
         dist = self.distance(x1, x2)
         return dist
+
+
+class SiameseNet(nn.Module):
+    def __init__(self, emb_len=256, arch=models.densenet121, n_slice=16, drop_rate=0.5):
+        super().__init__()
+        self.cnn = create_body(arch, cut=-1)
+        #model = arch(pretrained=True)
+        #self.cnn = nn.DataParallel(model.features[:-1])
+        self.n_slice = n_slice
+
+        #self.head = nn.Sequential(AdaptiveConcatPool2d(),
+        #                          Flatten(),
+        #                          nn.Dropout(drop_rate),
+        #                          nn.PReLU(),
+        #                          nn.Linear(cnn_activations_count(arch, 1, 1)*2, emb_len)
+        #                          )
+        n_filters = cnn_activations_count(arch, 1, 1)*2
+        self.head = nn.DataParallel(nn.Sequential(AdaptiveConcatPool2d(), Flatten(),
+                                  nn.BatchNorm1d(n_filters), nn.Dropout(drop_rate), nn.Linear(n_filters, 1024),
+                                  nn.PReLU(),
+                                  nn.BatchNorm1d(1024), nn.Dropout(drop_rate), nn.Linear(1024, emb_len)))
+        self.metric = nn.DataParallel(Metric(emb_len))
+
+    def forward(self, x):
+        x = self.head(self.cnn(x))
+        sz = x.shape[0]
+        x1 = x.unsqueeze(1).expand((sz, sz, -1))
+        x2 = x1.transpose(0, 1)
+        # matrix of all vs all differencies
+        d = (x1 - x2).view(sz * sz, -1)
+        return self.metric(d)
+
+    def cal_emb(self, x):
+        return self.head(self.cnn(x))
+
+    def cal_dist(self, x0, x):
+        d = (x - x0)
+        return self.metric(d)
 
 
 class SiameseNetwork2(nn.Module):
@@ -1589,6 +1635,8 @@ def fit(epochs: int, model: nn.Module, loss_func: LossFunction, opt: optim.Optim
             cb_handler.on_epoch_begin()
 
             for xb, yb in progress_bar(data.train_dl, parent=pbar):
+                xb = torch.cat(xb)
+                yb = torch.cat(yb)
                 xb, yb = cb_handler.on_batch_begin(xb, yb)
                 loss = loss_batch(model, xb, yb, loss_func, opt, cb_handler)
                 if cb_handler.on_batch_end(loss): break
@@ -1638,3 +1686,148 @@ def union(preds, targs):
 def IoU(preds, targs):
     return intersection(preds, targs) / union(preds, targs)
 
+
+class Metric(nn.Module):
+    def __init__(self, emb_sz=64):
+        super().__init__()
+        self.l = nn.Linear(emb_sz * 2, emb_sz * 2, False)
+
+    def forward(self, d):
+        d2 = d.pow(2)
+        d = self.l(torch.cat((d, d2), dim=-1))
+        x = d.pow(2).sum(dim=-1)
+        return x.view(-1)
+
+
+class Contrastive_loss(nn.Module):
+    def __init__(self, m=10.0, wd=1e-4):
+        super().__init__()
+        self.m, self.wd = m, wd
+
+    def forward(self, d, target):
+        d = d.float()
+        # matrix of all vs all comparisons
+        t = torch.cat(target)
+        sz = t.shape[0]
+        t1 = t.unsqueeze(1).expand((sz, sz))
+        t2 = t1.transpose(0, 1)
+        y = ((t1 == t2) + to_gpu(torch.eye(sz).byte())).view(-1)
+
+        loss_p = d[y == 1]
+        loss_n = F.relu(self.m - torch.sqrt(d[y == 0])) ** 2
+        loss = torch.cat((loss_p, loss_n), 0)
+        loss = loss[torch.nonzero(loss).squeeze()]
+        loss = loss.mean() if loss.shape[0] > 0 else loss.sum()
+        loss += self.wd * (d ** 2).mean()  # compactification term
+        return loss
+
+
+# accuracy within a triplet
+def T_acc(d, target):
+    sz = target[0].shape[0]
+    lp = [3 * sz * i + i + sz for i in range(sz)]
+    ln = [3 * sz * i + i + 2 * sz for i in range(sz)]
+    dp, dn = d[lp], d[ln]
+    return (dp < dn).float().mean()
+
+
+# accuracy within a hardest triplet in a batch for each anchor image
+def BH_acc(d, target):
+    t = torch.cat(target)
+    sz = t.shape[0]
+    t1 = t.unsqueeze(1).expand((sz, sz))
+    t2 = t1.transpose(0, 1)
+    y = (t1 == t2)
+    d = d.float().view(sz, sz)
+    BH = []
+    for i in range(sz):
+        dp = d[i, y[i, :] == 1].max()
+        dn = d[i, y[i, :] == 0].min()
+        BH.append(dp < dn)
+    return torch.FloatTensor(BH).float().mean()
+
+
+def pp_dist_max(d, target):
+    t = torch.cat(target)
+    sz = t.shape[0]
+    t1 = t.unsqueeze(1).expand((sz, sz))
+    t2 = t1.transpose(0, 1)
+    y = (t1 == t2)
+    d = d.float().view(sz, sz)
+    pp_dist = []
+    for i in range(sz):
+        dp = d[i, y[i] == 1].max()
+        dn = d[i, y[i] == 0].min()
+        pp_dist.append(dp)
+    return torch.FloatTensor(pp_dist).float().mean()
+
+def pn_dist_min(d, target):
+    t = torch.cat(target)
+    sz = t.shape[0]
+    t1 = t.unsqueeze(1).expand((sz, sz))
+    t2 = t1.transpose(0, 1)
+    y = (t1 == t2)
+    d = d.float().view(sz, sz)
+    pn_dist = []
+    for i in range(sz):
+        dn = d[i, y[i] == 0].min()
+        pn_dist.append(dn)
+    return torch.FloatTensor(pn_dist).float().mean()
+
+
+def cut_model(m, cut):
+    return list(m.children())[:cut] if cut else [m]
+
+def get_densenet121(pre=True):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        layers = cut_model(cut_model(densenet121(pre), -1)[0], -1)
+    return nn.Sequential(*layers)
+
+
+class TripletDenseNet121(nn.Module):
+    def __init__(self, pre=True, emb_sz=64, ps=0.5):
+        super().__init__()
+        encoder = get_densenet121(pre)
+        # add DataParallel to allow support of multiple GPUs
+        self.cnn = nn.DataParallel(nn.Sequential(encoder[0], encoder[1], nn.ReLU(),
+                                                 encoder[3], encoder[4], encoder[5], encoder[6], encoder[7],
+                                                 encoder[8], encoder[9], encoder[10]))
+        self.head = nn.DataParallel(nn.Sequential(AdaptiveConcatPool2d(), Flatten(),
+                                                  nn.BatchNorm1d(2048), nn.Dropout(ps), nn.Linear(2048, 1024),
+                                                  nn.ReLU(),
+                                                  nn.BatchNorm1d(1024), nn.Dropout(ps), nn.Linear(1024, emb_sz)))
+        self.metric = nn.DataParallel(Metric(emb_sz))
+
+    def forward(self, x):
+        x1, x2, x3 = x[:, 0, :, :, :], x[:, 1, :, :, :], x[:, 2, :, :, :]
+        x1 = self.head(self.cnn(x1))
+        x2 = self.head(self.cnn(x2))
+        x3 = self.head(self.cnn(x3))
+        x = torch.cat((x1, x2, x3))
+        sz = x.shape[0]
+        x1 = x.unsqueeze(1).expand((sz, sz, -1))
+        x2 = x1.transpose(0, 1)
+        # matrix of all vs all differencies
+        d = (x1 - x2).view(sz * sz, -1)
+        return self.metric(d)
+
+    def get_embedding(self, x):
+        return self.head(self.cnn(x))
+
+    def get_d(self, x0, x):
+        d = (x - x0)
+        return self.metric(d)
+
+
+class DenseNet121Model():
+    def __init__(self, pre=True, name='TripletDenseNet21', **kwargs):
+        self.model = to_gpu(TripletDenseNet121(pre=True, **kwargs))
+        self.name = name
+
+    def get_layer_groups(self, precompute):
+        m = self.model.module if isinstance(self.model, FP16) else self.model
+        if precompute:
+            return [m.head] + [m.metric]
+        c = children(m.cnn.module)
+        return list(split_by_idxs(c, [8])) + [m.head] + [m.metric]
