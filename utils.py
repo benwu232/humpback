@@ -15,6 +15,12 @@ from fastai.callbacks.hooks import num_features_model, model_sizes
 import torchvision
 import tensorboardX as tx
 
+PATH = './'
+TRAIN = '../input/train/'
+TEST = '../input/test/'
+LABELS = '../input/train.csv'
+BOXES = '../input/bounding_boxes.csv'
+#
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 
@@ -37,6 +43,21 @@ def change_new_whale(df, new_name='z_new_whale'):
     for k in range(len(df)):
         if df.at[k, 'Id'] == 'new_whale':
             df.at[k, 'Id'] = new_name
+
+def prepro_df(df0, new_whale=True, more_than=0):
+    df = deepcopy(df0)
+    df_counted = df.groupby('Id').count()
+    df_counted = df_counted.rename(columns={'Image': 'Count'})
+    df = df.join(df_counted, on='Id')
+
+    if not new_whale:
+        df = df[df['Id']!='new_whale']
+
+    if more_than > 0:
+        df = df[df['Count']>more_than]
+
+    return df
+
 
 def gen_ref_ds(ds):
     "Generate reference dataset from original dataset without new_whale"
@@ -185,7 +206,7 @@ def make_whale_class_dict(df):
     return whale_class_dict
 
 
-class ImageItemListEx(ImageItemList):
+class ImageItemListEx(ImageList):
     def __init__(self, *args, convert_mode='RGB', **kwargs):
         super().__init__(*args, convert_mode=convert_mode, **kwargs)
 
