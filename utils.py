@@ -6,6 +6,7 @@ from copy import deepcopy
 import datetime as dt
 
 import fastai
+import sklearn
 from fastai.vision import *
 from fastai.basic_data import *
 from fastai.metrics import accuracy
@@ -14,8 +15,15 @@ from fastai.callbacks.hooks import num_features_model, model_sizes
 import torchvision
 import tensorboardX as tx
 
+PATH = './'
+TRAIN = '../input/train/'
+TEST = '../input/test/'
+LABELS = '../input/train.csv'
+
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
+
+new_whale_id = 'z_new_whale'
 
 train_list_dbg = ['00050a15a.jpg', '0005c1ef8.jpg', '0006e997e.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg', '30eac8c9f.jpg', '3c4235ad2.jpg', '4e6290672.jpg', 'b2cabd9d8.jpg', '411ae328a.jpg', '204c7a64b.jpg', '3161ae9b9.jpg', '399533efd.jpg', '108f230d8.jpg', '2c63ff756.jpg', '1eccb4eba.jpg', '20e7c6af4.jpg', '23acb3957.jpg', '0d5777fc2.jpg', '2885ea466.jpg', '2d43e205a.jpg', '2c0892b4d.jpg', '847b16277.jpg', '03be3723c.jpg', '1cc6523fc.jpg', '47d9ad983.jpg', '645300669.jpg', '77fef7f1a.jpg', '67947e46b.jpg', '4bb9c9727.jpg', '166a9e05d.jpg', '2b95bba09.jpg', '6662f0d1c.jpg']
 val_list_dbg = ['ffd61cded.jpg', 'ffdddcc0f.jpg', 'fffde072b.jpg', 'c5658abf0.jpg', 'cc6c1a235.jpg', 'ee87a2369.jpg', '8d601c3e1.jpg', 'b758f5366.jpg', 'b9aefbbc8.jpg', 'c5d1963ab.jpg', '910e6297a.jpg', 'bdb41dba8.jpg', 'bf1eba5c2.jpg', 'cd650e905.jpg', 'b3ba738d7.jpg', 'c48bb3cbf.jpg', 'c5f7b85de.jpg', '79fac8c6d.jpg', 'b94450f8e.jpg', 'bd3f7ba02.jpg', 'c938f9d6f.jpg', 'e92c45748.jpg', '9ae676cb0.jpg', 'a8d5237c0.jpg']
@@ -28,6 +36,55 @@ def find_new_whale_idx(classes):
     for k, cls in enumerate(classes):
         if cls == 'new_whale':
             return k
+
+def change_new_whale(df, new_name='z_new_whale'):
+    for k in range(len(df)):
+        if df.at[k, 'Id'] == 'new_whale':
+            df.at[k, 'Id'] = new_name
+
+def prepro_df(df, new_whale_method=0, greater_than=0):
+    cnt_dict = {}
+    for name, group in df.groupby('Id'):
+        cnt_dict[name] = len(group)
+
+    pass
+
+
+
+def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1, new_whale_id='z_new_whale'):
+    '''
+    Split whale dataset to train and valid set based on k-fold idea.
+    total_folds: number of total folds
+    nth_fold: the nth fold
+    new_whale_method: If 0, remove new_whale in all data sets; if 1, add new_whale to train/validation sets
+    seed: Random seed for shuffling
+    '''
+    np.random.seed(seed)
+    # list(df_known.groupby('Id'))
+    train_list = []
+    val_list = []
+    # df_known = df[df.Id!='new_whale']
+    for name, group in df.groupby('Id'):
+        # print(name, len(group), group.index, type(group))
+        # if name == 'w_b82d0eb':
+        #    print(name, df_known[df_known.Id==name])
+        if new_whale_method == 0 and name == new_whale_id:
+            continue
+        group_num = len(group)
+        images = group.Image.values
+        if group_num > 1:
+            np.random.shuffle(images)
+            # images = list(images)
+            span = max(1, group_num // total_folds)
+            val_images = images[nth_fold * span:(nth_fold + 1) * span]
+            train_images = list(set(images) - set(val_images))
+            val_list.extend(val_images)
+            train_list.extend(train_images)
+        else:
+            train_list.extend(images)
+
+    return train_list, val_list
+
 
 def gen_ref_ds(ds):
     "Generate reference dataset from original dataset without new_whale"
@@ -134,41 +191,6 @@ def create_submission(preds, data, name, classes=None):
     sub.to_csv(f'subs/{name}.csv.gz', index=False, compression='gzip')
 
 
-def split_whale_set(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1):
-    '''
-    Split whale dataset to train and valid set based on k-fold idea.
-    total_folds: number of total folds
-    nth_fold: the nth fold
-    new_whale_method: If 0, remove new_whale in all data sets; if 1, add new_whale to train/validation sets
-    seed: Random seed for shuffling
-    '''
-    np.random.seed(seed)
-    # list(df_known.groupby('Id'))
-    train_list = []
-    val_list = []
-    # df_known = df[df.Id!='new_whale']
-    for name, group in df.groupby('Id'):
-        # print(name, len(group), group.index, type(group))
-        # if name == 'w_b82d0eb':
-        #    print(name, df_known[df_known.Id==name])
-        if new_whale_method == 0 and name == 'new_whale':
-            continue
-        group_num = len(group)
-        images = group.Image.values
-        if group_num > 1:
-            np.random.shuffle(images)
-            # images = list(images)
-            span = max(1, group_num // total_folds)
-            val_images = images[nth_fold * span:(nth_fold + 1) * span]
-            train_images = list(set(images) - set(val_images))
-            val_list.extend(val_images)
-            train_list.extend(train_images)
-        else:
-            train_list.extend(images)
-
-    return train_list, val_list
-
-
 def make_whale_class_dict(df):
     whale_class_dict = {}
     for name, group in df.groupby('Id'):
@@ -176,7 +198,7 @@ def make_whale_class_dict(df):
     return whale_class_dict
 
 
-class ImageItemListEx(ImageItemList):
+class ImageItemListEx(ImageList):
     def __init__(self, *args, convert_mode='RGB', **kwargs):
         super().__init__(*args, convert_mode=convert_mode, **kwargs)
 
