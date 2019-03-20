@@ -21,12 +21,13 @@ from models import *
 
 
 def run(config):
-    name = f'{config.task.name}-fine'
+    name = f'{config.task.name}'
 
-    df0 = pd.read_csv(LABELS)
-    df = filter_df(df0, new_whale=False, more_than=1)
+    df = pd.read_csv(LABELS)
+    #change_new_whale(df, 'z_new_whale')
+    df = filter_df(df, new_whale=111)
     df_fname = df.set_index('Image')
-    val_idxes = split_whale_idx(df, nth_fold=0, new_whale_method=0, seed=1, new_whale_id='new_whale')
+    val_idxes = split_data_set(df, seed=1)
 
     data = (
         ImageList
@@ -42,27 +43,52 @@ def run(config):
             .normalize(imagenet_stats)
     )
 
-    net = CosNet(config)
+    #net = ArcNet(config)
     learner = Learner(data,
                       CosNet(config),
-                      #loss_func=nn.CrossEntropyLoss(),
-                      loss_func=ArcFaceLoss(radius=config.model.pars.radius),
+                      loss_func=nn.CrossEntropyLoss(),
+                      #loss_func=ArcFaceLoss(radius=config.model.pars.radius, margin=config.model.pars.margin),
+                      #loss_func=CosFaceLoss(radius=config.model.pars.radius, margin=0.0),
+                      metrics=[accuracy, map5, mapkfast],
+                      #metrics=[mapkfast],
                       path='../'
                       )
 
-    #learner.split([learner.model.body[:6], learner.model[6:], learner.model.head, learner.model.metric])
+    learner.split([learner.model.body[:6], learner.model.body[6:], learner.model.head, learner.model.cos_sim])
+    learner.freeze_to(-2)
+
+    #coarse stage
+    if not config.train.pretrained_file:
+        learner.clip_grad(2.)
+        #learner.load(f'{name}-coarse')
+        learner.fit_one_cycle(5, 1e-2)
+        fname = f'{name}-coarse'
+        print(f'saving to {fname}')
+        learner.save(fname)
+
+        print('LR finding ...')
+        learner.lr_find()
+        learner.recorder.plot()
+        plt.savefig('lr_find.png')
+    else:
+        learner.load(config.train.pretrained_file)
+
+    # Fine tuning
     learner.clip_grad()
+    learner.unfreeze()
 
-    #learner.load(f'{name}-coarse')
-    learner.fit_one_cycle(20, 1e-2)
-    learner.save(f'{name}-coarse')
+    max_lr = 3e-3
+    lrs = [max_lr/100, max_lr/10, max_lr, max_lr]
+    from fastai.callbacks import SaveModelCallback
+    cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
+    cb_cal_map5 = CalMap5Callback(learner)
+    #cb_siamese_validate = SiameseValidateCallback(learn, txlog)
+    cbs = [cb_save_model, cb_cal_map5]
+
+    learner.fit_one_cycle(100, lrs, callbacks=cbs)
 
 
 
-    print('LR finding ...')
-    learner.lr_find()
-    learner.recorder.plot()
-    plt.savefig('lr_find.png')
 
 def parse_args():
     description = 'Train humpback whale identification'

@@ -1,0 +1,56 @@
+
+
+n_process: 6
+
+task:
+  name: &task_name 'CosNet'
+
+model:
+  backbone: 'densenet121'
+  #backbone: 'resnet18'
+  #backbone: 'resnet34'
+  #backbone: 'resnet50'
+  pars:
+    #n_emb: 512
+    n_emb: 1024
+    radius: 70
+    margin: 0.5
+    n_class: 5005
+    drop_rate: 0.5
+    pretrained: True
+
+
+train:
+  #pretrained_file: 'Arc_11'
+  #pretrained_file: 'Arc-coarse-resnet18'
+  pretrained_file: 'CosNet-coarse'
+  #pretrained_file: ~
+  dir: './train_logs/densenet121.1st'
+  batch_size: 32
+  log_step: 2
+  save_checkpoint_epoch: 2
+  n_epoch: 500
+
+val:
+  cal_metric_once: True
+  batch_size: 32
+
+loss:
+  #name: 'cross_entropy'
+
+  name: 'ArcFace'
+  radius: 70
+  margin: 0.5
+
+  #name: 'CosFace'
+  #radius: 70
+  #margin: 0.35
+
+transform:
+  name: 'align_transform'
+  num_preprocessor: 6
+  params:
+    size: 320
+    align: True
+    align_p: 0.5
+
