@@ -15,7 +15,7 @@ model:
     n_emb: 1024
     radius: 70
     margin: 0.35
-    n_class: 5005
+    n_class: 5004
     drop_rate: 0.5
     pretrained: True
 

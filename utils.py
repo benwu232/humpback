@@ -106,7 +106,7 @@ def split_data_set(df, seed=97):
     seed: Random seed for shuffling
     '''
     n_known_whale = 400
-    n_new_whale = 110
+    n_new_whale = 111
     np.random.seed(seed)
     val_idxes = []
     new_whale_idxes = []
