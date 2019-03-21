@@ -14,7 +14,7 @@ model:
     #n_emb: 512
     n_emb: 1024
     radius: 70
-    margin: 0.5
+    margin: 0.35
     n_class: 5005
     drop_rate: 0.5
     pretrained: True
@@ -23,8 +23,8 @@ model:
 train:
   #pretrained_file: 'Arc_11'
   #pretrained_file: 'Arc-coarse-resnet18'
-  pretrained_file: 'CosNet-coarse'
-  #pretrained_file: ~
+  #pretrained_file: 'CosNet-coarse'
+  pretrained_file: ~
   dir: './train_logs/densenet121.1st'
   batch_size: 32
   log_step: 2
@@ -38,7 +38,7 @@ val:
 loss:
   #name: 'cross_entropy'
 
-  name: 'ArcFace'
+  name: 'CosFace'
   radius: 70
   margin: 0.5
 

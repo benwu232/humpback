@@ -45,7 +45,7 @@ def get_loss_fn(config):
     elif loss == 'CosFace':
         radius = config.loss.radius
         margin = config.loss.margin
-        loss_fn = ArcFaceLoss(radius=radius, margin=margin)
+        loss_fn = CosFaceLoss(radius=radius, margin=margin)
     return loss_fn
 
 class ArcModule1(nn.Module):
@@ -150,6 +150,50 @@ class CosHead(nn.Module):
         return x
 
 
+
+class CosNet(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.n_emb = config.model.pars.n_emb
+        self.radius = config.model.pars.radius
+        self.n_class = config.model.pars.n_class
+        self.body = get_body(config)
+        nf = num_features_model(nn.Sequential(*self.body.children())) * 2
+        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.pars.drop_rate, concat_pool=True, bn_final=True)
+        self.cos_sim = CosSimCenters(self.n_emb, self.n_class)
+
+    def forward(self, x):
+        x = self.body(x)
+        x = self.head(x)
+        x = self.cos_sim(x)
+        return x
+
+    def cal_features(self, x):
+        x = self.body(x)
+        x = self.head(x)
+        x = F.normalize(x)
+        return x
+
+    def pred(self, in_images):
+        cos = self.forward(in_images)
+        cos = F.normalize(cos)
+        return torch.softmax(cos, dim=1)
+
+    '''
+    def pred1(self, in_images, target):
+        cos = self.forward(in_images)
+        cos_th = cos[0]
+        cos_th_m = cos[1]
+        onehot = onehot_enc(target, n_class=cos_th.shape[-1])
+        #if target.dim() == 1:
+        #    target = target.unsqueeze(-1)
+        #onehot = torch.zeros(cos_th.size()).to(device)
+        #onehot.scatter_(1, target, 1)
+        logits = onehot * cos_th_m + (1.0 - onehot) * cos_th
+        logits = logits * self.radius     #rescale
+        return torch.softmax(logits, dim=1)
+    '''
+
 class ArcFaceLoss(nn.CrossEntropyLoss):
     def __init__(self, weight=None, size_average=None, ignore_index=-100,
                  reduce=None, reduction='mean', radius=60, margin=0.5):
@@ -204,52 +248,8 @@ class CosFaceLoss(nn.CrossEntropyLoss):
     #@weak_script_method
     def forward(self, cos_th, target):
         onehot = onehot_enc(target, n_class=cos_th.shape[-1])
-        logits = self.radius * (cos_th - onehot * self.margin)
+        logits = self.radius * (cos_th * (1 - onehot) + (cos_th - self.margin) * onehot)
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
-
-
-class CosNet(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.n_emb = config.model.pars.n_emb
-        self.radius = config.model.pars.radius
-        self.n_class = config.model.pars.n_class
-        self.body = get_body(config)
-        nf = num_features_model(nn.Sequential(*self.body.children())) * 2
-        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.pars.drop_rate, concat_pool=True, bn_final=True)
-        self.cos_sim = CosSimCenters(self.n_emb, self.n_class)
-
-    def forward(self, x):
-        x = self.body(x)
-        x = self.head(x)
-        x = self.cos_sim(x)
-        return x
-
-    def cal_features(self, x):
-        x = self.body(x)
-        x = self.head(x)
-        x = F.normalize(x)
-        return x
-
-    def pred(self, in_images):
-        cos = self.forward(in_images)
-        cos = F.normalize(cos)
-        return torch.softmax(cos, dim=1)
-
-    '''
-    def pred1(self, in_images, target):
-        cos = self.forward(in_images)
-        cos_th = cos[0]
-        cos_th_m = cos[1]
-        onehot = onehot_enc(target, n_class=cos_th.shape[-1])
-        #if target.dim() == 1:
-        #    target = target.unsqueeze(-1)
-        #onehot = torch.zeros(cos_th.size()).to(device)
-        #onehot.scatter_(1, target, 1)
-        logits = onehot * cos_th_m + (1.0 - onehot) * cos_th
-        logits = logits * self.radius     #rescale
-        return torch.softmax(logits, dim=1)
-    '''
 
 
 from utils import map5
@@ -277,19 +277,28 @@ class CalMap5Callback(fastai.callbacks.tracker.TrackerCallback):
             print(f'map score: {map_score}\n')
 
 
-class ModelPoolCallback(fastai.callbacks.tracker.TrackerCallback):
+class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
     "A `TrackerCallback` that saves the model when monitored quantity is best."
-    def __init__(self, learn:Learner, monitor:str='val_score', mode:str='auto', every:str='improvement', name:str='bestmodel', config=None):
+    def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', patience=30, config=None):
         super().__init__(learn, monitor=monitor, mode=mode)
-        self.sb_len = 11
         self.prefix = 'densenet121'
         self.monitor = monitor
         self.config = config
-        self.scoreboard_file = pdir.models/f'scoreboard-{self.prefix}.pkl'
-        if self.scoreboard_file.is_file():
-            self.scoreboard = load_dump(self.scoreboard_file)
+        if isinstance(scoreboard, Scoreboard):
+            self.scoreboard = scoreboard
         else:
-            self.scoreboard = []
+            if isinstance(scoreboard, Path):
+                self.scoreboard_file = scoreboard
+            elif isinstance(scoreboard, str):
+                if 'scoreboard' in scoreboard:
+                    self.scoreboard_file = Path(scoreboard)
+                else:
+                    self.scoreboard_file = pdir.models/f'scoreboard-{scoreboard}.pkl'
+            self.sb_len = config.scoreboard.len
+            self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
+        self.best_score = 0
+        self.patience = patience
+        self.wait = 0
 
     def jump_to_epoch(self, epoch:int)->None:
         try:
@@ -309,27 +318,33 @@ class ModelPoolCallback(fastai.callbacks.tracker.TrackerCallback):
             score = val_score
         print(f'score = {score}')
 
+        # early stopping
+        if score is None: return
+        if self.operator(score, self.best_score):
+            self.best_score,self.wait = score,0
+        else:
+            self.wait += 1
+            print(f'wait={self.wait}, patience={self.patience}')
+            if self.wait > self.patience:
+                print(f'Epoch {epoch}: early stopping')
+                return {"stop_training":True}
+
+        #scoreboard
         #if len(self.scoreboard) == 0 or score > self.scoreboard[-1][0]:
-        if len(self.scoreboard) < self.sb_len or self.operator(score, self.scoreboard[-1][0]):
+        if not self.scoreboard.is_full() or self.operator(score, self.scoreboard[-1]['score']):
             store_file = f'{self.prefix}-{epoch}'
             save_path = self.learn.save(store_file, return_path=True)
             plog.info('$$$$$$$$$$$$$ Good score {} at training step {} $$$$$$$$$'.format(score, epoch))
             plog.info(f'save to {save_path}')
-
-            self.scoreboard.append([score, epoch, start_timestamp, self.config, save_path])
-            reverse = 'greater' in str(self.operator)
-            self.scoreboard.sort(key=lambda e: e[0], reverse=reverse)
-
-            #remove useless files
-            if len(self.scoreboard) > self.sb_len:
-                del_file = self.scoreboard[-1][-1]
-                if del_file.is_file():
-                    del_file.unlink()
-
-            self.scoreboard = self.scoreboard[:self.sb_len]
-            save_dump(self.scoreboard, self.scoreboard_file)
+            update_dict = {'score': score.item(),
+                           'epoch': epoch,
+                           'timestamp': start_timestamp,
+                           'config': self.config,
+                           'file': save_path
+                           }
+            self.scoreboard.update(update_dict)
 
     def on_train_end(self, **kwargs):
         "Load the best model."
-        self.learn.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
+        self.learn.load(self.scoreboard[0]['file'], purge=False)
 

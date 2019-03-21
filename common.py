@@ -94,3 +94,39 @@ start_timestamp = now2str()
 pdir = BaseDirs()
 plog_file = pdir.log/f'{start_timestamp}.log'
 plog = init_logger(log_file=plog_file)
+
+#todo scoreboard
+class Scoreboard():
+    def __init__(self, sb_file, sb_len=11, sort='dec'):
+        if sb_file.is_file():
+            load_obj = load_dump(sb_file)
+            self.__dict__.update(load_obj.__dict__)
+        else:
+            self.sb = []
+            self.sb_len = sb_len
+            self.sort = sort
+            self.sb_file = sb_file
+
+    def update(self, content:dict):
+        self.sb.append(content)
+        reverse = self.sort in 'decrease'
+        self.sb.sort(key=lambda e: e['score'], reverse=reverse)
+
+        #remove useless files
+        if len(self.sb) > self.sb_len:
+            del_file = self.sb[-1]['file']
+            if del_file.is_file():
+                del_file.unlink()
+        self.sb = self.sb[:self.sb_len]
+
+        save_dump(self, self.sb_file)
+
+    def __len__(self):
+        return len(self.sb)
+
+    def __getitem__(self, idx):
+        return self.sb[idx]
+
+    def is_full(self):
+        return len(self.sb) >= self.sb_len
+

@@ -60,46 +60,35 @@ def run(config):
                           init=None,
                           #path=pdir.root,
                           metrics=[accuracy, map5, mapkfast])
-    learner.clip_grad(2.)
 
-
-    #coarse stage
-    if not config.train.pretrained_file:
-        #learner.load(f'{name}-coarse')
-        learner.fit_one_cycle(8, 1e-2)
-        fname = f'{name}-coarse'
-        print(f'saving to {fname}')
-        learner.save(fname)
-
-        print('LR finding ...')
-        learner.lr_find()
-        learner.recorder.plot()
-        plt.savefig('lr_find.png')
+    if len(scoreboard) and scoreboard[0]['file'].is_file():
+        model_file = scoreboard[0]['file'].name[:-4]
     else:
-        if len(scoreboard) and scoreboard[0]['file'].is_file():
-            model_file = scoreboard[0]['file'].name[:-4]
-        else:
-            model_file = config.train.pretrained_file
-        learner.load(model_file, with_opt=True)
-        #learner.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
+        model_file = config.train.pretrained_file
+    #model_file = 'densenet121-27'
+    print(f'loading {model_file} ...')
+    learner.load(model_file)
 
-    # Fine tuning
-    learner.clip_grad()
-    learner.unfreeze()
+    preds, _ = learner.get_preds(DatasetType.Test)#, n_batch=20)
+    probs = F.softmax(preds, dim=1)
+    probs, tops = probs.topk(5, dim=1)
 
-    max_lr = 1e-3
-    lrs = [max_lr/100, max_lr/10, max_lr]
-    cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
-    cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
-    cb_cal_map5 = CalMap5Callback(learner)
-    cb_scoreboard = ScoreboardCallback(learner, scoreboard=scoreboard, config=config)
-    #cbs = [cb_cal_map5, cb_scoreboard, cb_early_stop]
-    #cbs = [cb_scoreboard, cb_early_stop]
-    cbs = [cb_scoreboard]
-
-    learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
-
-
+    tops = tops.cpu().numpy()
+    test_df = pd.read_csv(pdir.data/'sample_submission.csv')
+    test_df = test_df.set_index('Image')
+    with tqdm.tqdm(total=len(tops)) as pbar:
+        for ri, class_idxes in enumerate(tops):
+            fname = learner.data.test_ds.x.items[ri].name
+            row = ''
+            for class_idx in class_idxes:
+                row += learner.data.classes[class_idx]
+                row += ' '
+                pass
+            test_df.at[fname, 'Id'] = row
+            pbar.update(100)
+    sub_file = f'../submission/{name}.csv'
+    print(f'write to {sub_file}')
+    test_df.to_csv(sub_file)
 
 
 def parse_args():
