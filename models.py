@@ -267,6 +267,39 @@ class PNLoss(nn.Module):
             self.n_thresh = (1 - p_thresh) / 2
 
     def forward(self, logits, target):
+        softmax = F.softmax(logits, 1)
+        #split known and unknown
+        p_target = target[target!=self.unknown]
+        p_softmax = softmax[target!=self.unknown]
+        #n_target = target[target==self.unknown]
+        n_softmax = softmax[target==self.unknown]
+
+        p_value = p_softmax.gather(1, p_target.view(-1, 1))
+        # subtract one margin for p_value itself
+        p_loss = F.relu(p_softmax + self.p_thresh - p_value).sum(dim=1) - self.p_thresh
+
+        n_loss = F.relu(n_softmax - self.n_thresh).sum(dim=1)
+
+        loss = torch.cat([p_loss, n_loss]).mean()
+        #ploss = p_loss.mean()
+        #nloss = n_loss.mean()
+
+        return loss#, ploss, nloss
+
+
+class PNLoss1(nn.Module):
+    def __init__(self, p_threshold, n_threshold=None, unknow_class=5004):
+        super().__init__()
+        self.set_threshold(p_threshold, n_threshold)
+        self.unknown = unknow_class
+
+    def set_threshold(self, p_thresh, n_thresh=None):
+        self.p_thresh = p_thresh
+        self.n_thresh = n_thresh
+        if n_thresh is None:
+            self.n_thresh = (1 - p_thresh) / 2
+
+    def forward(self, logits, target):
         #split known and unknown
         p_target = target[target!=self.unknown]
         p_logits = logits[target!=self.unknown]
