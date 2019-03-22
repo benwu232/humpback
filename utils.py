@@ -57,21 +57,28 @@ def change_new_whale(df, new_name='z_new_whale'):
             df.at[k, 'Id'] = new_name
 
 
-def filter_df(df0, new_whale=111, more_than=0):
+def filter_df(df0, n_new_whale=111, more_than=0, new_whale_id='new_whale'):
+    '''
+    :param df0:
+    :param n_new_whale: 0: no new_whale; >0: keep number of new_whale; <0: keep all new_whale
+    :param more_than: keep the whales which are more than more_than
+    :return: processed dataframe
+    '''
     df = deepcopy(df0)
     df_counted = df.groupby('Id').count()
     df_counted = df_counted.rename(columns={'Image': 'Count'})
     df = df.join(df_counted, on='Id')
 
-    df_new_whale = df[df['Id'] == 'new_whale']
-    df = df[df['Id'] != 'new_whale']
+    df_new_whale = df[df['Id'] == new_whale_id]
+    df = df[df['Id'] != new_whale_id]
     df_new_whale = df_new_whale.sample(frac=1)
-    df_new_whale = np.split(df_new_whale, [new_whale], axis=0)[0]
+    if n_new_whale > 0:
+        df_new_whale = np.split(df_new_whale, [n_new_whale], axis=0)[0]
 
     if more_than > 0:
         df = df[df['Count'] > more_than]
 
-    if new_whale > 0:
+    if n_new_whale != 0:
         df = df.append(df_new_whale)
 
     df = df.reset_index()
@@ -115,7 +122,7 @@ def split_data_set(df, seed=97):
         group_idxes = group.index.tolist()
         if group_num == 2:
             val_idxes.append(random.choice(group_idxes))
-        elif name == 'new_whale':
+        elif name == new_whale_id:
             np.random.shuffle(group_idxes)
             new_whale_idxes = list(group_idxes[:n_new_whale])
 

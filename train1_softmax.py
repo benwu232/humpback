@@ -19,7 +19,7 @@ import torchvision
 name = 'softmax'
 
 df0 = pd.read_csv(LABELS)
-df = filter_df(df0, new_whale=False, more_than=1)
+df = filter_df(df0, n_new_whale=False, more_than=1)
 df_fname = df.set_index('Image')
 val_idxes = split_whale_idx(df, nth_fold=0, new_whale_method=0, seed=1, new_whale_id='new_whale')
 

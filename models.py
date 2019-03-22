@@ -38,6 +38,8 @@ def get_loss_fn(config):
     loss = config.loss.name
     if loss == 'cross_entropy':
         loss_fn = nn.CrossEntropyLoss()
+    elif loss == 'PNLoss':
+        loss_fn = PNLoss(p_threshold=config.loss.p_threshold, unknow_class=config.loss.unknown_class)
     elif loss == 'ArcFace':
         radius = config.loss.radius
         margin = config.loss.margin
@@ -247,9 +249,41 @@ class CosFaceLoss(nn.CrossEntropyLoss):
 
     #@weak_script_method
     def forward(self, cos_th, target):
-        onehot = onehot_enc(target, n_class=cos_th.shape[-1])
-        logits = self.radius * (cos_th * (1 - onehot) + (cos_th - self.margin) * onehot)
+        target_onehot = onehot_enc(target, n_class=cos_th.shape[-1])
+        logits = self.radius * (cos_th * (1 - target_onehot) + (cos_th - self.margin) * target_onehot)
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
+
+
+class PNLoss(nn.Module):
+    def __init__(self, p_threshold, n_threshold=None, unknow_class=5004):
+        super().__init__()
+        self.set_threshold(p_threshold, n_threshold)
+        self.unknown = unknow_class
+
+    def set_threshold(self, p_thresh, n_thresh=None):
+        self.p_thresh = p_thresh
+        self.n_thresh = n_thresh
+        if n_thresh is None:
+            self.n_thresh = (1 - p_thresh) / 2
+
+    def forward(self, logits, target):
+        #split known and unknown
+        p_target = target[target!=self.unknown]
+        p_logits = logits[target!=self.unknown]
+        #n_target = target[target==self.unknown]
+        n_logits = logits[target==self.unknown]
+
+        p_value = p_logits.gather(1, p_target.view(-1, 1))
+        # subtract one margin for p_value itself
+        p_loss = F.relu(p_logits + self.p_thresh - p_value).sum(dim=1) - self.p_thresh
+
+        n_loss = F.relu(n_logits - self.n_thresh).sum(dim=1)
+
+        loss = torch.cat([p_loss, n_loss]).mean()
+        #ploss = p_loss.mean()
+        #nloss = n_loss.mean()
+
+        return loss#, ploss, nloss
 
 
 from utils import map5

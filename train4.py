@@ -24,7 +24,7 @@ def run():
 
     df = pd.read_csv(LABELS)
     #change_new_whale(df, 'z_new_whale')
-    df = filter_df(df, new_whale=111)
+    df = filter_df(df, n_new_whale=111)
     df_fname = df.set_index('Image')
     val_idxes = split_data_set(df, seed=1)
 

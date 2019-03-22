@@ -25,8 +25,8 @@ def run(config):
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
     df = pd.read_csv(LABELS)
-    #change_new_whale(df, 'z_new_whale')
-    df = filter_df(df, new_whale=111)
+    change_new_whale(df, new_whale_id)
+    #df = filter_df(df, n_new_whale=-1, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
     val_idxes = split_data_set(df, seed=1)
 
