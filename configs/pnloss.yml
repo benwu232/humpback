@@ -15,7 +15,7 @@ model:
     n_emb: 1024
     radius: 70
     margin: 0.35
-    n_class: 5005
+    n_class: 5004
     drop_rate: 0.5
     pretrained: True
 
@@ -23,13 +23,13 @@ model:
 train:
   #pretrained_file: 'Arc_11'
   #pretrained_file: 'Arc-coarse-resnet18'
-  #pretrained_file: 'CosNet-densenet121-CosFace-coarse'
+  #pretrained_file: 'CosNet-coarse'
   pretrained_file: ~
   dir: './train_logs/densenet121.1st'
   batch_size: 32
-  batches_per_epoch: 400
+  log_step: 2
+  save_checkpoint_epoch: 2
   n_epoch: 500
-  patience: 3
 
 val:
   cal_metric_once: True
@@ -42,9 +42,14 @@ loss:
   #radius: 70
   #margin: 0.5
 
-  name: 'CosFace'
-  radius: 70
-  margin: 0.35
+  #name: 'CosFace'
+  #radius: 70
+  #margin: 0.35
+
+  name: 'PNLoss'
+  p_threshold: 0.6
+  n_threshold: 0.05
+  unknown_class: 5004
 
 transform:
   name: 'align_transform'

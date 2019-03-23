@@ -39,7 +39,7 @@ def get_loss_fn(config):
     if loss == 'cross_entropy':
         loss_fn = nn.CrossEntropyLoss()
     elif loss == 'PNLoss':
-        loss_fn = PNLoss(p_threshold=config.loss.p_threshold, unknow_class=config.loss.unknown_class)
+        loss_fn = PNLoss(p_threshold=config.loss.p_threshold, n_threshold=config.loss.n_threshold, unknow_class=config.loss.unknown_class)
     elif loss == 'ArcFace':
         radius = config.loss.radius
         margin = config.loss.margin
@@ -48,6 +48,10 @@ def get_loss_fn(config):
         radius = config.loss.radius
         margin = config.loss.margin
         loss_fn = CosFaceLoss(radius=radius, margin=margin)
+    elif loss == 'MixLoss':
+        radius = config.loss.radius
+        margin = config.loss.margin
+        loss_fn = MixLoss(radius=radius, margin=margin)
     return loss_fn
 
 class ArcModule1(nn.Module):
@@ -140,20 +144,52 @@ class CosHead(nn.Module):
         for m in self.head.children():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
+                #nn.init.kaiming_normal_(self.head)
 
-        #nn.init.kaiming_normal_(self.head)
+        self.unknown_classifier = nn.Linear(self.out_features, 1)
+        nn.init.xavier_normal_(self.unknown_classifier.weight)
 
     def cal_features(self, x):
-        x = self.head(x)
-        return F.normalize(x)
+        return self.forward(x)
 
     def forward(self, x):
-        x = self.head(x)
-        return x
-
+        cos_th = self.head(x)
+        unknown_logits = self.unknown_classifier(cos_th)
+        return [cos_th, unknown_logits]
 
 
 class CosNet(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.n_emb = config.model.pars.n_emb
+        self.radius = config.model.pars.radius
+        self.n_class = config.model.pars.n_class
+        self.body = get_body(config)
+        nf = num_features_model(nn.Sequential(*self.body.children())) * 2
+        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.pars.drop_rate, concat_pool=True, bn_final=True)
+        self.cos_sim = CosSimCenters(self.n_emb, self.n_class)
+        self.unknown_classifier = nn.Linear(self.n_class, 1)
+
+    def forward(self, x):
+        x = self.body(x)
+        x = self.head(x)
+        cos_th = self.cos_sim(x)
+        unknown_logits = self.unknown_classifier(x)
+        return [cos_th, unknown_logits]
+
+    def cal_features(self, x):
+        x = self.body(x)
+        x = self.head(x)
+        x = F.normalize(x)
+        return x
+
+    def pred(self, in_images):
+        cos = self.forward(in_images)
+        cos = F.normalize(cos)
+        return torch.softmax(cos, dim=1)
+
+
+class CosNet1(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.n_emb = config.model.pars.n_emb
@@ -254,6 +290,30 @@ class CosFaceLoss(nn.CrossEntropyLoss):
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
 
 
+class MixLoss(nn.Module):
+    def __init__(self, radius=60, margin=0.4, unknow_class=5004):
+        super().__init__()
+        self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)
+        self.unknown = unknow_class
+
+    def forward(self, logits, target):
+        unknown_logits = logits[-1]
+        logits = logits[0]
+
+        unknown_target = (target==self.unknown)
+        #pred_unknown = torch.sigmoid(unknown_logits) > 0.5
+        binary_loss = F.binary_cross_entropy_with_logits(unknown_logits.view_as(target), unknown_target.float())#, reduction='none')
+
+        logits_known = logits[target!=self.unknown]
+        target_known = target[target!=self.unknown]
+        loss_known = self.cos_face_loss(logits_known, target_known)
+
+        loss = loss_known + binary_loss * 10
+        #print(f'binary_loss={binary_loss}, loss_known={loss_known}')
+
+        return loss#, ploss, nloss
+
+
 class PNLoss(nn.Module):
     def __init__(self, p_threshold, n_threshold=None, unknow_class=5004):
         super().__init__()
@@ -346,7 +406,7 @@ class CalMap5Callback(fastai.callbacks.tracker.TrackerCallback):
 
 class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
     "A `TrackerCallback` that saves the model when monitored quantity is best."
-    def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', patience=30, config=None):
+    def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', config=None):
         super().__init__(learn, monitor=monitor, mode=mode)
         self.prefix = 'densenet121'
         self.monitor = monitor
@@ -364,7 +424,7 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
             self.sb_len = config.scoreboard.len
             self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
         self.best_score = 0
-        self.patience = patience
+        self.patience = config.train.patience
         self.wait = 0
 
     def jump_to_epoch(self, epoch:int)->None:
@@ -387,7 +447,8 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
 
         # early stopping
         if score is None: return
-        if self.operator(score, self.best_score):
+        #if self.operator(score, self.best_score):
+        if score > self.best_score:
             self.best_score,self.wait = score,0
         else:
             self.wait += 1
@@ -413,5 +474,5 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
 
     def on_train_end(self, **kwargs):
         "Load the best model."
-        self.learn.load(self.scoreboard[0]['file'], purge=False)
+        self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
 
