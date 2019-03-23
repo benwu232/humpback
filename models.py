@@ -146,50 +146,19 @@ class CosHead(nn.Module):
                 nn.init.xavier_normal_(m.weight)
                 #nn.init.kaiming_normal_(self.head)
 
-        self.unknown_classifier = nn.Linear(self.out_features, 1)
-        nn.init.xavier_normal_(self.unknown_classifier.weight)
+        #self.unknown_classifier = nn.Linear(self.out_features, 1)
+        #nn.init.xavier_normal_(self.unknown_classifier.weight)
 
     def cal_features(self, x):
         return self.forward(x)
 
     def forward(self, x):
         cos_th = self.head(x)
-        unknown_logits = self.unknown_classifier(cos_th)
-        return [cos_th, unknown_logits]
+        #unknown_logits = self.unknown_classifier(cos_th)
+        return cos_th
 
 
 class CosNet(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.n_emb = config.model.pars.n_emb
-        self.radius = config.model.pars.radius
-        self.n_class = config.model.pars.n_class
-        self.body = get_body(config)
-        nf = num_features_model(nn.Sequential(*self.body.children())) * 2
-        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.pars.drop_rate, concat_pool=True, bn_final=True)
-        self.cos_sim = CosSimCenters(self.n_emb, self.n_class)
-        self.unknown_classifier = nn.Linear(self.n_class, 1)
-
-    def forward(self, x):
-        x = self.body(x)
-        x = self.head(x)
-        cos_th = self.cos_sim(x)
-        unknown_logits = self.unknown_classifier(x)
-        return [cos_th, unknown_logits]
-
-    def cal_features(self, x):
-        x = self.body(x)
-        x = self.head(x)
-        x = F.normalize(x)
-        return x
-
-    def pred(self, in_images):
-        cos = self.forward(in_images)
-        cos = F.normalize(cos)
-        return torch.softmax(cos, dim=1)
-
-
-class CosNet1(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.n_emb = config.model.pars.n_emb
