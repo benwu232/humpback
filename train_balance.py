@@ -99,15 +99,27 @@ def run(config):
                           loss_func=loss_fn,
                           custom_head=CosHead(config),
                           init=None,
-                          #path=pdir.root,
-                          metrics=[accuracy, map5, mapkfast])
+                          path=pdir.root,
+                          metrics=[accuracy_with_unknown, mapk_with_unknown]
+                          #metrics=[accuracy, map5, mapkfast])
+                          )
+    #learner.data.classes[-1] = 'new_whale'
+    #learner.to_fp16()
     learner.clip_grad(2.)
 
+    cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
+    cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
+    cb_cal_map5 = CalMap5Callback(learner)
+    cb_scoreboard = ScoreboardCallback(learner, monitor='val_loss', scoreboard=scoreboard, config=config)
+    #cbs = [cb_cal_map5, cb_scoreboard, cb_early_stop]
+    #cbs = [cb_scoreboard, cb_early_stop]
+    cbs = [cb_scoreboard]#, cb_cal_map5]
 
     #coarse stage
-    if not config.train.pretrained_file:
+    cur_epoch = 0
+    if not config.train.pretrain:
         #learner.load(f'{name}-coarse')
-        learner.fit_one_cycle(8, 1e-2)
+        learner.fit_one_cycle(8, 1e-2)#, callbacks=cbs)
         fname = f'{name}-coarse'
         print(f'saving to {fname}')
         learner.save(fname)
@@ -120,23 +132,20 @@ def run(config):
         if len(scoreboard) and scoreboard[0]['file'].is_file():
             model_file = scoreboard[0]['file'].name[:-4]
         else:
-            model_file = config.train.pretrained_file
+            model_file = f'{name}-coarse'
+        #model_file = 'CosNet-densenet121-MixLoss-coarse'
+        print(f'loading {model_file}')
         learner.load(model_file, with_opt=True)
+        #cur_epoch = int(re.search(r'-(\d+)$', model_file).group(1))
         #learner.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
 
     # Fine tuning
+    #learner.to_fp16()
     learner.clip_grad()
     learner.unfreeze()
 
     max_lr = 1e-3
     lrs = [max_lr/100, max_lr/10, max_lr]
-    cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
-    cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
-    cb_cal_map5 = CalMap5Callback(learner)
-    cb_scoreboard = ScoreboardCallback(learner, scoreboard=scoreboard, config=config)
-    #cbs = [cb_cal_map5, cb_scoreboard, cb_early_stop]
-    #cbs = [cb_scoreboard, cb_early_stop]
-    cbs = [cb_scoreboard]
 
     learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 

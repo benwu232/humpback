@@ -155,7 +155,8 @@ class CosHead(nn.Module):
     def forward(self, x):
         cos_th = self.head(x)
         unknown_logits = self.unknown_classifier(cos_th)
-        return [cos_th, unknown_logits]
+        #return [cos_th, unknown_logits]
+        return torch.cat([unknown_logits, cos_th], dim=1)
 
 
 class CosNet(nn.Module):
@@ -295,10 +296,12 @@ class MixLoss(nn.Module):
         super().__init__()
         self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)
         self.unknown = unknow_class
+        self.cnt = 0
+        self.avg_loss_known = 20.0
 
     def forward(self, logits, target):
-        unknown_logits = logits[-1]
-        logits = logits[0]
+        unknown_logits = logits[:, 0]
+        logits = logits[:, 1:]
 
         unknown_target = (target==self.unknown)
         #pred_unknown = torch.sigmoid(unknown_logits) > 0.5
@@ -306,12 +309,18 @@ class MixLoss(nn.Module):
 
         logits_known = logits[target!=self.unknown]
         target_known = target[target!=self.unknown]
-        loss_known = self.cos_face_loss(logits_known, target_known)
+        loss_known = self.avg_loss_known
+        if len(target_known):
+            loss_known = self.cos_face_loss(logits_known, target_known)
+            self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
 
         loss = loss_known + binary_loss * 10
-        #print(f'binary_loss={binary_loss}, loss_known={loss_known}')
 
-        return loss#, ploss, nloss
+        self.cnt += 1
+        if self.cnt % 400 == 0:
+            print(f'binary_loss={binary_loss}, loss_known={loss_known}\n')
+
+        return loss
 
 
 class PNLoss(nn.Module):
@@ -385,9 +394,10 @@ class CalMap5Callback(fastai.callbacks.tracker.TrackerCallback):
     def __init__(self, learn):
         super().__init__(learn)
 
-    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
-    def on_epoch_end(self, epoch, **kwargs: Any) -> None:
-        preds = []
+    def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    #def on_epoch_end(self, epoch, **kwargs: Any) -> None:
+        preds_known = []
+        preds_unknown = []
         targets = []
         self.learn.model.eval()
         with torch.no_grad():
@@ -395,20 +405,41 @@ class CalMap5Callback(fastai.callbacks.tracker.TrackerCallback):
                 #print(k)
                 #if k >=15: break
                 #softmax = self.learn.model.pred(data)
-                softmax = self.learn.model(data)
-                preds.append(softmax)
+                softmax, binary = self.learn.model(data)
+                preds_known.append(softmax)
+                preds_unknown.append(binary)
                 targets.append(labels)
-            preds = torch.cat(preds)
+            preds_known = torch.cat(preds_known)
+            preds_unknown = torch.cat(preds_unknown)
             targets = torch.cat(targets)
-            map_score = mapkfast(preds, targets)
+            #acc = accuracy_with_unknown([preds_known, preds_unknown], targets)
+            #print(acc)
+            map_score = mapk_with_unknown([preds_known, preds_unknown], targets)
             print(f'map score: {map_score}\n')
+
+
+class ResumeEpoch(fastai.callbacks.tracker.TrackerCallback):
+    "Resume epoch"
+    def __init__(self, learn, resume_epoch):
+        super().__init__(learn)
+        self.resume = resume_epoch
+
+    def on_train_begin(self, epochs:int, pbar:PBar, metrics:MetricFuncList)->None:
+        "About to start learning."
+        self.state_dict = {'epoch':self.resume, 'iteration':0, 'num_batch':0}
+        self.state_dict.update(dict(n_epochs=epochs, pbar=pbar, metrics=metrics))
+        names = [(met.name if hasattr(met, 'name') else camel2snake(met.__class__.__name__)) for met in self.metrics]
+        self('train_begin', metrics_names=names)
+        if self.state_dict['epoch'] != 0:
+            self.state_dict['pbar'].first_bar.total -= self.state_dict['epoch']
+            for cb in self.callbacks: cb.jump_to_epoch(self.state_dict['epoch'])
 
 
 class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
     "A `TrackerCallback` that saves the model when monitored quantity is best."
     def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', config=None):
         super().__init__(learn, monitor=monitor, mode=mode)
-        self.prefix = 'densenet121'
+        self.prefix = config.model.backbone
         self.monitor = monitor
         self.config = config
         if isinstance(scoreboard, Scoreboard):
@@ -424,31 +455,34 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
             self.sb_len = config.scoreboard.len
             self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
         self.best_score = 0
+        self.mode = 'max'
+        self.operator = np.greater
+        if monitor == 'val_loss':
+            self.best_score = np.inf
+            self.mode = 'min'
+            self.operator = np.less
         self.patience = config.train.patience
         self.wait = 0
 
     def jump_to_epoch(self, epoch:int)->None:
         try:
-            self.learn.load(f'{self.name}_{epoch-1}', purge=False)
-            print(f"Loaded {self.name}_{epoch-1}")
-        except: print(f'Model {self.name}_{epoch-1} not found.')
+            self.learn.load(f'{self.name}_{epoch}', purge=False)
+            print(f"Loaded {self.name}_{epoch}")
+        except: print(f'Model {self.name}_{epoch} not found.')
 
-    def on_epoch_end(self, epoch:int, **kwargs:Any)->None:
     #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    def on_epoch_end(self, epoch:int, **kwargs:Any)->None:
         "Compare the value monitored to its best score and maybe save the model."
-        val_result = self.learn.validate(self.learn.data.valid_dl)
-        val_loss = val_result[0]
-        val_score = val_result[-1]
         if self.monitor == 'val_loss':
-            score = val_loss
-        elif self.monitor == 'val_score':
-            score = val_score
+            score = self.get_monitor_value()
+        else:  #map score
+            _, score = self.learn.validate(self.learn.data.valid_dl)
         print(f'score = {score}')
 
         # early stopping
         if score is None: return
-        #if self.operator(score, self.best_score):
-        if score > self.best_score:
+        #if score > self.best_score:
+        if self.operator(score, self.best_score):
             self.best_score,self.wait = score,0
         else:
             self.wait += 1
@@ -474,5 +508,6 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
 
     def on_train_end(self, **kwargs):
         "Load the best model."
-        self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
+        if len(self.scoreboard):
+            self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
 

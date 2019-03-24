@@ -23,13 +23,12 @@ model:
 train:
   #pretrained_file: 'Arc_11'
   #pretrained_file: 'Arc-coarse-resnet18'
-  #pretrained_file: 'CosNet-densenet121-CosFace-coarse'
-  pretrained_file: ~
+  pretrain: True
   dir: './train_logs/densenet121.1st'
   batch_size: 32
-  batches_per_epoch: 400
-  n_epoch: 500
-  patience: 3
+  batches_per_epoch: 500
+  n_epoch: 600
+  patience: 30
 
 val:
   cal_metric_once: True

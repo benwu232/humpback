@@ -287,6 +287,38 @@ def mapkfast(preds, targs, k=5):
         scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
+def accuracy_with_unknown(preds, targs, k=5, unknown_idx=5004):
+    #print(preds.shape, targs.shape)
+    targs = targs.detach().cpu().numpy()
+    preds_unknown = (torch.sigmoid(preds[:, 0]) > 0.5).view(-1).detach().cpu().numpy()
+    preds_known = preds[:, 1:]
+    preds_idxes = preds_known.max(dim=1)[1].detach().cpu().numpy()
+
+    top_5 = preds_known.topk(k, 1)[1].detach().cpu().numpy()
+    for ri in range(len(preds_known)):
+        if preds_unknown[ri]:
+            preds_idxes[ri] = unknown_idx
+
+    return torch.tensor((preds_idxes == targs).mean())
+
+def mapk_with_unknown(preds, targs, k=5, unknown_idx=5004):
+    #print(preds.shape, targs.shape)
+    targs = targs.detach().cpu().numpy()
+    preds_unknown = (torch.sigmoid(preds[:, 0]) > 0.5).detach().cpu().numpy()
+
+    preds_known = preds[:, 1:]
+    top_5 = preds_known.topk(k, 1)[1].detach().cpu().numpy()
+    for ri in range(len(preds_known)):
+        if preds_unknown[ri]:
+            top_5[ri, 1:] = top_5[ri, :-1]
+            top_5[ri, 0] = unknown_idx
+
+    scores = np.zeros([len(preds_known), k], dtype=np.float32)
+    for kk in range(k):
+        #scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
+        scores[:,kk] = (top_5[:,kk] == targs) / float(kk+1)
+    return torch.tensor(scores.max(axis=1).mean())
+
 def top_5_preds(preds): return np.argsort(preds.numpy())[:, ::-1][:, :5]
 
 

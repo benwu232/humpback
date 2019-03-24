@@ -25,8 +25,8 @@ def run(config):
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
     df = pd.read_csv(LABELS)
-    #change_new_whale(df, 'z_new_whale')
-    df = filter_df(df, n_new_whale=111)
+    change_new_whale(df, new_whale_id)
+    df = filter_df(df, n_new_whale=-1, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
     val_idxes = split_data_set(df, seed=1)
 
@@ -51,6 +51,7 @@ def run(config):
             .normalize(imagenet_stats)
     )
 
+    data.classes[-1] = 'new_whale'
     backbone = get_backbone(config)
     loss_fn = get_loss_fn(config)
     learner = cnn_learner(data,
@@ -65,13 +66,21 @@ def run(config):
         model_file = scoreboard[0]['file'].name[:-4]
     else:
         model_file = config.train.pretrained_file
-    #model_file = 'densenet121-27'
+    model_file = 'densenet121-7'
     print(f'loading {model_file} ...')
     learner.load(model_file)
 
     preds, _ = learner.get_preds(DatasetType.Test)#, n_batch=20)
-    probs = F.softmax(preds, dim=1)
+    preds_unknown = (torch.sigmoid(preds[:, 0]) > 0.5)
+    preds_known = preds[:, 1:]
+    probs = F.softmax(preds_known, dim=1)
     probs, tops = probs.topk(5, dim=1)
+
+    #top_5 = preds_known.topk(k, 1)[1].detach().cpu().numpy()
+    for ri in range(len(preds_known)):
+        if preds_unknown[ri]:
+            tops[ri, 1:] = tops[ri, :-1]
+            tops[ri, 0] = 5004
 
     tops = tops.cpu().numpy()
     test_df = pd.read_csv(pdir.data/'sample_submission.csv')
