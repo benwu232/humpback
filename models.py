@@ -288,30 +288,39 @@ class PNLoss(nn.Module):
         super().__init__()
         self.set_threshold(p_threshold, n_threshold)
         self.unknown = unknow_class
+        self.cnt = 0
 
     def set_threshold(self, p_thresh, n_thresh=None):
-        self.p_thresh = p_thresh
-        self.n_thresh = n_thresh
+        self.known_thresh = p_thresh
+        self.unknown_thresh = n_thresh
         if n_thresh is None:
-            self.n_thresh = (1 - p_thresh) / 2
+            self.unknown_thresh = (1 - p_thresh) / 2
+        self.cal_topk_start = partial(linear_decay, pars=[3000, 10, 0, 3000])
 
     def forward(self, logits, target):
-        softmax = F.softmax(logits, 1)
+        #softmax = F.softmax(logits, 1)
+        softmax = logits
         #split known and unknown
-        p_target = target[target!=self.unknown]
-        p_softmax = softmax[target!=self.unknown]
+        known_target = target[target!=self.unknown]
+        known_softmax = softmax[target!=self.unknown]
         #n_target = target[target==self.unknown]
-        n_softmax = softmax[target==self.unknown]
+        unknown_softmax = softmax[target==self.unknown]
 
-        p_value = p_softmax.gather(1, p_target.view(-1, 1))
-        # subtract one margin for p_value itself
-        p_loss = F.relu(p_softmax + self.p_thresh - p_value).sum(dim=1) - self.p_thresh
+        known_value = known_softmax.gather(1, known_target.view(-1, 1))
+        #known_loss = F.relu(known_softmax.topk(topk_start+self.section)[0][-self.section] + self.known_thresh - known_value).sum(dim=1) - self.known_thresh
+        # subtract one margin for known_value itself
+        #known_loss = F.relu(known_softmax + self.known_thresh - known_value).sum(dim=1) - self.known_thresh
+        known_loss = F.relu(known_softmax[self.possible_error:] + self.known_thresh - known_value).sum(dim=1)
 
-        n_loss = F.relu(n_softmax - self.n_thresh).sum(dim=1)
+        unknown_loss = F.relu(unknown_softmax - self.unknown_thresh).sum(dim=1)
 
-        loss = torch.cat([p_loss, n_loss]).mean()
-        #ploss = p_loss.mean()
+        loss = torch.cat([known_loss, unknown_loss]).mean()
+        #ploss = known_loss.mean()
         #nloss = n_loss.mean()
+
+        self.cnt += 1
+        if self.cnt % 400 == 0:
+            print(f'loss_known={known_loss}, loss_unknown={unknown_loss}\n')
 
         return loss#, ploss, nloss
 
@@ -377,7 +386,7 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
     "A `TrackerCallback` that saves the model when monitored quantity is best."
     def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', config=None):
         super().__init__(learn, monitor=monitor, mode=mode)
-        self.prefix = 'densenet121'
+        self.prefix = config.model.backbone
         self.monitor = monitor
         self.config = config
         if isinstance(scoreboard, Scoreboard):
@@ -393,31 +402,34 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
             self.sb_len = config.scoreboard.len
             self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
         self.best_score = 0
+        self.mode = 'max'
+        self.operator = np.greater
+        if monitor == 'val_loss':
+            self.best_score = np.inf
+            self.mode = 'min'
+            self.operator = np.less
         self.patience = config.train.patience
         self.wait = 0
 
     def jump_to_epoch(self, epoch:int)->None:
         try:
-            self.learn.load(f'{self.name}_{epoch-1}', purge=False)
-            print(f"Loaded {self.name}_{epoch-1}")
-        except: print(f'Model {self.name}_{epoch-1} not found.')
+            self.learn.load(f'{self.name}_{epoch}', purge=False)
+            print(f"Loaded {self.name}_{epoch}")
+        except: print(f'Model {self.name}_{epoch} not found.')
 
-    def on_epoch_end(self, epoch:int, **kwargs:Any)->None:
     #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    def on_epoch_end(self, epoch:int, **kwargs:Any)->None:
         "Compare the value monitored to its best score and maybe save the model."
-        val_result = self.learn.validate(self.learn.data.valid_dl)
-        val_loss = val_result[0]
-        val_score = val_result[-1]
         if self.monitor == 'val_loss':
-            score = val_loss
-        elif self.monitor == 'val_score':
-            score = val_score
+            score = self.get_monitor_value()
+        else:  #map score
+            _, score = self.learn.validate(self.learn.data.valid_dl)
         print(f'score = {score}')
 
         # early stopping
         if score is None: return
-        #if self.operator(score, self.best_score):
-        if score > self.best_score:
+        #if score > self.best_score:
+        if self.operator(score, self.best_score):
             self.best_score,self.wait = score,0
         else:
             self.wait += 1
@@ -443,5 +455,6 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
 
     def on_train_end(self, **kwargs):
         "Load the best model."
-        self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
+        if len(self.scoreboard):
+            self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
 
