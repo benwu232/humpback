@@ -295,7 +295,6 @@ class PNLoss(nn.Module):
         self.unknown_thresh = n_thresh
         if n_thresh is None:
             self.unknown_thresh = (1 - p_thresh) / 2
-        self.cal_topk_start = partial(linear_decay, pars=[3000, 10, 0, 3000])
 
     def forward(self, logits, target):
         #softmax = F.softmax(logits, 1)
