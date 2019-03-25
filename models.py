@@ -289,6 +289,7 @@ class PNLoss(nn.Module):
         self.set_threshold(p_threshold, n_threshold)
         self.unknown = unknow_class
         self.cnt = 0
+        self.possible_error = 10
 
     def set_threshold(self, p_thresh, n_thresh=None):
         self.known_thresh = p_thresh
@@ -309,7 +310,7 @@ class PNLoss(nn.Module):
         #known_loss = F.relu(known_softmax.topk(topk_start+self.section)[0][-self.section] + self.known_thresh - known_value).sum(dim=1) - self.known_thresh
         # subtract one margin for known_value itself
         #known_loss = F.relu(known_softmax + self.known_thresh - known_value).sum(dim=1) - self.known_thresh
-        known_loss = F.relu(known_softmax[self.possible_error:] + self.known_thresh - known_value).sum(dim=1)
+        known_loss = F.relu(known_softmax[:, self.possible_error:] + self.known_thresh - known_value).sum(dim=1)
 
         unknown_loss = F.relu(unknown_softmax - self.unknown_thresh).sum(dim=1)
 
