@@ -17,13 +17,12 @@ model:
     margin: 0.35
     n_class: 5004
     drop_rate: 0.5
-    pretrained: True
+    pretrain: 0
 
 
 train:
   #pretrained_file: 'Arc_11'
   #pretrained_file: 'Arc-coarse-resnet18'
-  pretrain: True
   dir: './train_logs/densenet121.1st'
   batch_size: 32
   batches_per_epoch: 500

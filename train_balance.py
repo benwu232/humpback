@@ -115,40 +115,55 @@ def run(config):
     #cbs = [cb_scoreboard, cb_early_stop]
     cbs = [cb_scoreboard]#, cb_cal_map5]
 
-    #coarse stage
-    cur_epoch = 0
-    if not config.train.pretrain:
-        #learner.load(f'{name}-coarse')
-        learner.fit_one_cycle(8, 1e-2)#, callbacks=cbs)
-        fname = f'{name}-coarse'
-        print(f'saving to {fname}')
-        learner.save(fname)
+    method = 2
+    if method == 1:
+        #coarse stage
+        if not config.model.pars.pretrain:
+            #learner.load(f'{name}-coarse')
+            learner.fit_one_cycle(16, 1e-2)#, callbacks=cbs)
+            fname = f'{name}-coarse'
+            print(f'saving to {fname}')
+            learner.save(fname)
 
-        print('LR finding ...')
-        learner.lr_find()
-        learner.recorder.plot()
-        plt.savefig('lr_find.png')
-    else:
-        if len(scoreboard) and scoreboard[0]['file'].is_file():
-            model_file = scoreboard[0]['file'].name[:-4]
+            print('LR finding ...')
+            learner.lr_find()
+            learner.recorder.plot()
+            plt.savefig('lr_find.png')
         else:
-            model_file = f'{name}-coarse'
-        #model_file = 'CosNet-densenet121-MixLoss-coarse'
-        print(f'loading {model_file}')
-        learner.load(model_file, with_opt=True)
-        #cur_epoch = int(re.search(r'-(\d+)$', model_file).group(1))
-        #learner.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
+            if len(scoreboard) and scoreboard[0]['file'].is_file():
+                model_file = scoreboard[0]['file'].name[:-4]
+            else:
+                model_file = f'{name}-coarse'
+            #model_file = 'CosNet-densenet121-MixLoss-coarse'
+            print(f'loading {model_file}')
+            learner.load(model_file, with_opt=True)
+            #cur_epoch = int(re.search(r'-(\d+)$', model_file).group(1))
+            #learner.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
 
-    # Fine tuning
-    #learner.to_fp16()
-    learner.clip_grad()
-    learner.unfreeze()
+        # Fine tuning
+        #learner.to_fp16()
+        learner.clip_grad()
+        learner.unfreeze()
 
-    max_lr = 1e-3
-    lrs = [max_lr/100, max_lr/10, max_lr]
+        max_lr = 1e-3
+        lrs = [max_lr/100, max_lr/10, max_lr]
 
-    learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
+        learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 
+    elif method == 2:
+        learner.clip_grad()
+        learner.unfreeze()
+        max_lr = 1e-4
+        lrs = [max_lr/100, max_lr/10, max_lr]
+        learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
+
+    elif method == 3:
+        learner.fit_one_cycle(5, 1e-2)#, callbacks=cbs)
+        learner.clip_grad()
+        learner.unfreeze()
+        max_lr = 1e-3
+        lrs = [max_lr/100, max_lr/10, max_lr]
+        learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 
 
 

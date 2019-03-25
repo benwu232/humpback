@@ -66,7 +66,8 @@ def run(config):
         model_file = scoreboard[0]['file'].name[:-4]
     else:
         model_file = config.train.pretrained_file
-    model_file = 'densenet121-7'
+    model_file = 'densenet121-8'
+    #model_file = 'CosNet-densenet121-MixLoss-coarse'
     print(f'loading {model_file} ...')
     learner.load(model_file)
 
