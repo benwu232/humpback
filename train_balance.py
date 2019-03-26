@@ -99,7 +99,7 @@ def run(config):
     backbone = get_backbone(config)
     loss_fn = get_loss_fn(config)
 
-    method = config.train_method
+    method = config.train.method
     if method in [1, 2]:
         true_wd = True
     else:
@@ -110,7 +110,7 @@ def run(config):
                           loss_func=loss_fn,
                           custom_head=CosHead(config),
                           init=None,
-                          tru_wd=true_wd,
+                          true_wd=true_wd,
                           path=pdir.root,
                           metrics=[accuracy, mapkfast]
                           #metrics=[accuracy, map5, mapkfast])

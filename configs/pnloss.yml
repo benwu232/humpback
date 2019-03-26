@@ -17,7 +17,7 @@ model:
     margin: 0.35
     n_class: 5004
     drop_rate: 0.5
-    pretrain: 1
+    pretrain: 0
 
 
 train:
@@ -29,7 +29,7 @@ train:
   patience: 30
   balance: 0
   method: 3
-  wd: !!float 5e-4
+  wd: !!float 1e-1
 
 val:
   cal_metric_once: True
