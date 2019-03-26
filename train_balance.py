@@ -29,7 +29,7 @@ def run(config):
     df = filter_df(df, n_new_whale=-1, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
     #val_idxes = split_data_set(df, seed=1)
-    val_idxes = split_whale_idx(df, new_whale_method=1, seed=97)
+    val_idxes = split_whale_idx(df, new_whale_method=config.train.new_whale, seed=97)
 
     #scoreboard = load_dump(pdir.models)
     scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'

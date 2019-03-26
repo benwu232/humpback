@@ -30,6 +30,7 @@ train:
   batches_per_epoch: 400
   n_epoch: 500
   patience: 3
+  new_whale: 0
 
 val:
   cal_metric_once: True
