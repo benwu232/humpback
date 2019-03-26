@@ -39,6 +39,17 @@ def run(config):
 
     batch_size = config.train.batch_size
     n_process = config.n_process
+    from fastai.vision.transform import *
+    vision_trans = get_transforms(do_flip=False,
+                                  p_lighting=0.9, max_lighting=0.6,
+                                  max_rotate=18,
+                                  max_zoom=1.2,
+                                  p_affine=0.9,
+                                  xtra_tfms=[
+                                      RandTransform(tfm=TfmCoord (jitter), kwargs={'magnitude': 0.01}),
+
+                                  ],
+                                  )
     data = (
         ImageList
             .from_df(df, TRAIN, cols=['Image'])
@@ -48,7 +59,7 @@ def run(config):
             #.label_from_func(lambda path: fn2label[path2fn(path)])
             .label_from_df(cols='Id')
             .add_test(ImageList.from_folder(TEST))
-            .transform(get_transforms(do_flip=False), size=SZ, resize_method=ResizeMethod.SQUISH)
+            .transform(vision_trans, size=SZ, resize_method=ResizeMethod.SQUISH)
             .databunch(bs=batch_size, num_workers=n_process, path=pdir.root)
             #.normalize(imagenet_stats)
     )
