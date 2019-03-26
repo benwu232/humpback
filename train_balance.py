@@ -98,11 +98,19 @@ def run(config):
 
     backbone = get_backbone(config)
     loss_fn = get_loss_fn(config)
+
+    method = config.train_method
+    if method in [1, 2]:
+        true_wd = True
+    else:
+        true_wd = False
+
     learner = cnn_learner(data_bunch,
                           backbone,
                           loss_func=loss_fn,
                           custom_head=CosHead(config),
                           init=None,
+                          tru_wd=true_wd,
                           path=pdir.root,
                           metrics=[accuracy, mapkfast]
                           #metrics=[accuracy, map5, mapkfast])
@@ -136,7 +144,6 @@ def run(config):
             learner.load(model_file, with_opt=True)
             #cur_epoch = int(re.search(r'-(\d+)$', model_file).group(1))
 
-    method = 2
     if method == 1:
         #coarse stage
         #learner.load(f'{name}-coarse')
@@ -173,7 +180,7 @@ def run(config):
         learner.unfreeze()
         max_lr = 1e-3
         lrs = [max_lr/100, max_lr/10, max_lr]
-        learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
+        learner.fit(config.train.n_epoch, lrs, callbacks=cbs)
 
 
 

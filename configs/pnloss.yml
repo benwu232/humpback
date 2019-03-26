@@ -28,6 +28,8 @@ train:
   n_epoch: 600
   patience: 30
   balance: 0
+  method: 3
+  wd: !!float 5e-4
 
 val:
   cal_metric_once: True
