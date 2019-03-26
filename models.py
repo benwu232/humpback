@@ -310,9 +310,9 @@ class PNLoss(nn.Module):
         #known_loss = F.relu(known_softmax.topk(topk_start+self.section)[0][-self.section] + self.known_thresh - known_value).sum(dim=1) - self.known_thresh
         # subtract one margin for known_value itself
         #known_loss = F.relu(known_softmax + self.known_thresh - known_value).sum(dim=1) - self.known_thresh
-        known_loss = F.relu(known_softmax[:, self.possible_error:] + self.known_thresh - known_value).sum(dim=1)
+        known_loss = (F.relu(known_softmax[:, self.possible_error:] + self.known_thresh - known_value)).sum(dim=1)
 
-        unknown_loss = F.relu(unknown_softmax - self.unknown_thresh).sum(dim=1)
+        unknown_loss = (F.relu(unknown_softmax - self.unknown_thresh)).sum(dim=1)
 
         loss = torch.cat([known_loss, unknown_loss]).mean()
         #ploss = known_loss.mean()
@@ -320,7 +320,7 @@ class PNLoss(nn.Module):
 
         self.cnt += 1
         if self.cnt % 400 == 0:
-            print(f'loss_known={known_loss}, loss_unknown={unknown_loss}\n')
+            print(f'loss_known={known_loss.mean()}, loss_unknown={unknown_loss.mean()}\n')
 
         return loss#, ploss, nloss
 
@@ -402,7 +402,7 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
             self.sb_len = config.scoreboard.len
             self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
         self.best_score = 0
-        self.mode = 'max'
+        self.mode = mode
         self.operator = np.greater
         if monitor == 'val_loss':
             self.best_score = np.inf

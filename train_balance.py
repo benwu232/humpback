@@ -28,12 +28,14 @@ def run(config):
     change_new_whale(df, new_whale_id)
     df = filter_df(df, n_new_whale=-1, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
-    val_idxes = split_data_set(df, seed=1)
+    #val_idxes = split_data_set(df, seed=1)
+    val_idxes = split_whale_idx(df, new_whale_method=1, seed=97)
 
     #scoreboard = load_dump(pdir.models)
     scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
-    sb_len = config.scoreboard.len
-    scoreboard = Scoreboard(scoreboard_file, sb_len, sort='dec')
+    scoreboard = Scoreboard(scoreboard_file,
+                            config.scoreboard.len,
+                            sort=config.scoreboard.sort)
 
     batch_size = config.train.batch_size
     n_process = config.n_process
@@ -51,17 +53,19 @@ def run(config):
             #.normalize(imagenet_stats)
     )
 
-    class_count = [0] * len(data.classes)
-    for k, cls in enumerate(data.train_ds.y.items):
-        class_count[cls] += 1
-    class_count[-1] = 4  #set new_whale
+    sampler = None
+    if config.train.balance:
+        class_count = [0] * len(data.classes)
+        for k, cls in enumerate(data.train_ds.y.items):
+            class_count[cls] += 1
+        class_count[-1] = 4  #set new_whale
 
-    class_sample_count = np.array([0] * len(data.train_ds))
-    for k, cls in enumerate(data.train_ds.y.items):
-        class_sample_count[k] = class_count[cls]
+        class_sample_count = np.array([0] * len(data.train_ds))
+        for k, cls in enumerate(data.train_ds.y.items):
+            class_sample_count[k] = class_count[cls]
 
-    weights = 1 / class_sample_count
-    sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, batch_size*config.train.batches_per_epoch)
+        weights = 1 / class_sample_count
+        sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, batch_size*config.train.batches_per_epoch)
 
     train_dl = DataLoader(
         data.train_ds,
@@ -100,7 +104,7 @@ def run(config):
                           custom_head=CosHead(config),
                           init=None,
                           path=pdir.root,
-                          metrics=[accuracy_with_unknown, mapk_with_unknown]
+                          metrics=[accuracy, mapkfast]
                           #metrics=[accuracy, map5, mapkfast])
                           )
     #learner.data.classes[-1] = 'new_whale'
@@ -110,35 +114,41 @@ def run(config):
     cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
     cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
     cb_cal_map5 = CalMap5Callback(learner)
-    cb_scoreboard = ScoreboardCallback(learner, monitor='val_loss', scoreboard=scoreboard, config=config)
+    cb_scoreboard = ScoreboardCallback(learner,
+                                       monitor='val_loss',
+                                       scoreboard=scoreboard,
+                                       config=config,
+                                       mode=config.scoreboard.mode)
     #cbs = [cb_cal_map5, cb_scoreboard, cb_early_stop]
     #cbs = [cb_scoreboard, cb_early_stop]
     cbs = [cb_scoreboard]#, cb_cal_map5]
 
-    method = 2
-    if method == 1:
-        #coarse stage
-        if not config.model.pars.pretrain:
-            #learner.load(f'{name}-coarse')
-            learner.fit_one_cycle(16, 1e-2)#, callbacks=cbs)
-            fname = f'{name}-coarse'
-            print(f'saving to {fname}')
-            learner.save(fname)
+    if config.model.pars.pretrain:
+        model_file = ''
+        if len(scoreboard) and scoreboard[0]['file'].is_file():
+            model_file = scoreboard[0]['file'].name[:-4]
+        elif (pdir.models/f'{name}-coarse.pth').is_file():
+            model_file = f'{name}-coarse'
 
-            print('LR finding ...')
-            learner.lr_find()
-            learner.recorder.plot()
-            plt.savefig('lr_find.png')
-        else:
-            if len(scoreboard) and scoreboard[0]['file'].is_file():
-                model_file = scoreboard[0]['file'].name[:-4]
-            else:
-                model_file = f'{name}-coarse'
-            #model_file = 'CosNet-densenet121-MixLoss-coarse'
+        #model_file = 'CosNet-densenet121-MixLoss-coarse'
+        if model_file:
             print(f'loading {model_file}')
             learner.load(model_file, with_opt=True)
             #cur_epoch = int(re.search(r'-(\d+)$', model_file).group(1))
-            #learner.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
+
+    method = 2
+    if method == 1:
+        #coarse stage
+        #learner.load(f'{name}-coarse')
+        learner.fit_one_cycle(2, 1e-2)#, callbacks=cbs)
+        fname = f'{name}-coarse'
+        print(f'saving to {fname}')
+        learner.save(fname)
+
+        print('LR finding ...')
+        learner.lr_find()
+        learner.recorder.plot()
+        plt.savefig('lr_find.png')
 
         # Fine tuning
         #learner.to_fp16()
@@ -153,7 +163,7 @@ def run(config):
     elif method == 2:
         learner.clip_grad()
         learner.unfreeze()
-        max_lr = 1e-4
+        max_lr = 1e-1
         lrs = [max_lr/100, max_lr/10, max_lr]
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 

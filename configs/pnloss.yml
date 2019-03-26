@@ -6,18 +6,18 @@ task:
   name: &task_name 'CosNet'
 
 model:
-  #backbone: 'densenet121'
-  backbone: 'resnet18'
+  backbone: 'densenet121'
+  #backbone: 'resnet18'
   #backbone: 'resnet34'
   #backbone: 'resnet50'
   pars:
-    n_emb: 512
-    #n_emb: 1024
+    #n_emb: 512
+    n_emb: 1024
     radius: 70
     margin: 0.35
     n_class: 5004
     drop_rate: 0.5
-    pretrain: 0
+    pretrain: 1
 
 
 train:
@@ -27,6 +27,7 @@ train:
   batches_per_epoch: 500
   n_epoch: 600
   patience: 30
+  balance: 0
 
 val:
   cal_metric_once: True
@@ -58,4 +59,6 @@ transform:
 
 scoreboard:
   len: 11
+  sort: 'inc'
+  mode: 'min'
 
