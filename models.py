@@ -111,6 +111,18 @@ class CosSimCenters(nn.Module):
         return torch.softmax(cos, dim=1)
 
 
+class BinaryHead(nn.Module):
+    def __init__(self, num_class=10008, emb_size = 2048, s = 16.0):
+        super().__init__()
+        self.s = s
+        self.fc = nn.Sequential(nn.Linear(emb_size, num_class))
+
+    def forward(self, fea):
+        fea = l2_norm(fea)
+        logit = self.fc(fea)*self.s
+        return logit
+
+
 class CosHead(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -138,7 +150,7 @@ class CosHead(nn.Module):
                                   nn.BatchNorm1d(self.in_features),
                                   #nn.Dropout(config.model.pars.drop_rate),
                                   #nn.Linear(2048, self.out_features),
-                                  CosSimCenters(self.in_features, self.out_features)
+                                  #CosSimCenters(self.in_features, self.out_features)
                                   )
 
         for m in self.head.children():
@@ -146,17 +158,19 @@ class CosHead(nn.Module):
                 nn.init.xavier_normal_(m.weight)
                 #nn.init.kaiming_normal_(self.head)
 
-        self.unknown_classifier = nn.Linear(self.out_features, 1)
-        nn.init.xavier_normal_(self.unknown_classifier.weight)
+        self.cos_classifier = CosSimCenters(self.in_features, self.out_features)
+        nn.init.xavier_normal_(self.cos_classifier.weight)
+        self.binary_classifier = nn.Linear(self.in_features, self.out_features)
+        nn.init.xavier_normal_(self.binary_classifier.weight)
 
     def cal_features(self, x):
         return self.forward(x)
 
     def forward(self, x):
-        cos_th = self.head(x)
-        unknown_logits = self.unknown_classifier(cos_th)
-        #return [cos_th, unknown_logits]
-        return torch.cat([unknown_logits, cos_th], dim=1)
+        features = self.head(x)
+        cos_th = self.cos_classifier(features)
+        bin_logits = self.binary_classifier(features)
+        return torch.cat([cos_th, bin_logits], dim=1)
 
 
 class CosNet(nn.Module):
@@ -291,7 +305,52 @@ class CosFaceLoss(nn.CrossEntropyLoss):
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
 
 
+def bce(input, target, OHEM_percent=None):
+    if OHEM_percent is None:
+        loss = F.binary_cross_entropy_with_logits(input, target, reduction='mean')
+        return loss
+    else:
+        loss = F.binary_cross_entropy_with_logits(input, target, reduce=False)
+        value, index= loss.topk(int(10008 * OHEM_percent), dim=1, largest=True, sorted=True)
+        return value.mean()
+
+
 class MixLoss(nn.Module):
+    def __init__(self, radius=60, margin=0.4, unknow_class=5004):
+        super().__init__()
+        self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)
+        self.unknown = unknow_class
+        self.cnt = 0
+        self.avg_loss_known = 20.0
+        self.n_hard = 200
+
+    def forward(self, logits, target):
+        cos_logits = logits[:, :5004]
+        bin_logits = logits[:, 5004:]
+
+        #for known, cos_loss
+        logits_known = cos_logits[target!=self.unknown]
+        target_known = target[target!=self.unknown]
+        loss_known = self.avg_loss_known
+        if len(target_known):
+            loss_known = self.cos_face_loss(logits_known, target_known)
+            self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
+            ohem_loss = logits_known[:, :self.n_hard].mean()
+
+        #for all = known + new_whale, binary_loss
+        bce_loss = bce(bin_logits, target)
+        #todo: bce_ohem_loss
+
+        loss = loss_known + ohem_loss + bce_loss
+
+        self.cnt += 1
+        if self.cnt % 400 == 0:
+            print(f'bce_loss={bce_loss}, loss_known={loss_known}, ohem_loss={ohem_loss}\n')
+
+        return loss
+
+
+class MixLoss1(nn.Module):
     def __init__(self, radius=60, margin=0.4, unknow_class=5004):
         super().__init__()
         self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)
@@ -355,37 +414,6 @@ class PNLoss(nn.Module):
 
         return loss#, ploss, nloss
 
-
-class PNLoss1(nn.Module):
-    def __init__(self, p_threshold, n_threshold=None, unknow_class=5004):
-        super().__init__()
-        self.set_threshold(p_threshold, n_threshold)
-        self.unknown = unknow_class
-
-    def set_threshold(self, p_thresh, n_thresh=None):
-        self.p_thresh = p_thresh
-        self.n_thresh = n_thresh
-        if n_thresh is None:
-            self.n_thresh = (1 - p_thresh) / 2
-
-    def forward(self, logits, target):
-        #split known and unknown
-        p_target = target[target!=self.unknown]
-        p_logits = logits[target!=self.unknown]
-        #n_target = target[target==self.unknown]
-        n_logits = logits[target==self.unknown]
-
-        p_value = p_logits.gather(1, p_target.view(-1, 1))
-        # subtract one margin for p_value itself
-        p_loss = F.relu(p_logits + self.p_thresh - p_value).sum(dim=1) - self.p_thresh
-
-        n_loss = F.relu(n_logits - self.n_thresh).sum(dim=1)
-
-        loss = torch.cat([p_loss, n_loss]).mean()
-        #ploss = p_loss.mean()
-        #nloss = n_loss.mean()
-
-        return loss#, ploss, nloss
 
 
 from utils import map5
@@ -455,7 +483,7 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
             self.sb_len = config.scoreboard.len
             self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
         self.best_score = 0
-        self.mode = 'max'
+        self.mode = mode
         self.operator = np.greater
         if monitor == 'val_loss':
             self.best_score = np.inf

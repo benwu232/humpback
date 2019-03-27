@@ -59,6 +59,21 @@ def init_logger(name='qf', to_console=True, log_file=None, level=logging.DEBUG,
     return logger
 
 
+def linear_decay(step, pars):
+    start_value = pars[0]
+    end_value = pars[1]
+    start_step = pars[2]
+    end_step = pars[3]
+    assert start_step <= end_step
+
+    if step < start_step:
+        return 0.0
+    elif step >= end_step:
+        return end_value
+    #epsilon = max(end_value, start_value - (step - start_step) * (start_value - end_value) / (end_step - start_step))
+    return start_value - (step - start_step) * (start_value - end_value) / (end_step - start_step)
+
+
 class BaseDirs():
     def __init__(self, root_path='', data_path='input'):
         dir_list = []

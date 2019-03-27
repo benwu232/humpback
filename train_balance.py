@@ -26,17 +26,31 @@ def run(config):
 
     df = pd.read_csv(LABELS)
     change_new_whale(df, new_whale_id)
-    df = filter_df(df, n_new_whale=-1, new_whale_id=new_whale_id)
+    df = filter_df(df, n_new_whale=config.train.new_whale, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
-    val_idxes = split_data_set(df, seed=1)
+    #val_idxes = split_data_set(df, seed=1)
+    val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
 
     #scoreboard = load_dump(pdir.models)
     scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
-    sb_len = config.scoreboard.len
-    scoreboard = Scoreboard(scoreboard_file, sb_len, sort='dec')
+    scoreboard = Scoreboard(scoreboard_file,
+                            config.scoreboard.len,
+                            sort=config.scoreboard.sort)
 
     batch_size = config.train.batch_size
     n_process = config.n_process
+    vision_trans = get_transforms(do_flip=False,
+                                  p_lighting=0.9, max_lighting=0.6,
+                                  max_rotate=18,
+                                  max_zoom=1.2,
+                                  p_affine=0.9,
+                                  xtra_tfms=[
+                                      RandTransform(tfm=TfmCoord (jitter), kwargs={'magnitude': 0.01}),
+                                      RandTransform(tfm=TfmCoord (symmetric_warp), kwargs={'magnitude': (-0.2, 0.2)}),
+                                      RandTransform(tfm=TfmPixel (cutout), kwargs={'n_holes': (1, 4), 'length': (5, 20)}),
+
+                                  ],
+                                  )
     data = (
         ImageList
             .from_df(df, TRAIN, cols=['Image'])
@@ -46,22 +60,24 @@ def run(config):
             #.label_from_func(lambda path: fn2label[path2fn(path)])
             .label_from_df(cols='Id')
             .add_test(ImageList.from_folder(TEST))
-            .transform(get_transforms(do_flip=False), size=SZ, resize_method=ResizeMethod.SQUISH)
+            .transform(vision_trans, size=SZ, resize_method=ResizeMethod.SQUISH)
             .databunch(bs=batch_size, num_workers=n_process, path=pdir.root)
             #.normalize(imagenet_stats)
     )
 
-    class_count = [0] * len(data.classes)
-    for k, cls in enumerate(data.train_ds.y.items):
-        class_count[cls] += 1
-    class_count[-1] = 4  #set new_whale
+    sampler = None
+    if config.train.balance:
+        class_count = [0] * len(data.classes)
+        for k, cls in enumerate(data.train_ds.y.items):
+            class_count[cls] += 1
+        class_count[-1] = 4  #set new_whale
 
-    class_sample_count = np.array([0] * len(data.train_ds))
-    for k, cls in enumerate(data.train_ds.y.items):
-        class_sample_count[k] = class_count[cls]
+        class_sample_count = np.array([0] * len(data.train_ds))
+        for k, cls in enumerate(data.train_ds.y.items):
+            class_sample_count[k] = class_count[cls]
 
-    weights = 1 / class_sample_count
-    sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, batch_size*config.train.batches_per_epoch)
+        weights = 1 / class_sample_count
+        sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, batch_size*config.train.batches_per_epoch)
 
     train_dl = DataLoader(
         data.train_ds,
@@ -94,13 +110,21 @@ def run(config):
 
     backbone = get_backbone(config)
     loss_fn = get_loss_fn(config)
+
+    method = config.train.method
+    if method in [1, 2]:
+        true_wd = True
+    else:
+        true_wd = False
+
     learner = cnn_learner(data_bunch,
                           backbone,
                           loss_func=loss_fn,
                           custom_head=CosHead(config),
                           init=None,
+                          true_wd=true_wd,
                           path=pdir.root,
-                          metrics=[accuracy_with_unknown, mapk_with_unknown]
+                          metrics=[accuracy, mapkfast]
                           #metrics=[accuracy, map5, mapkfast])
                           )
     #learner.data.classes[-1] = 'new_whale'
@@ -110,17 +134,33 @@ def run(config):
     cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
     cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
     cb_cal_map5 = CalMap5Callback(learner)
-    cb_scoreboard = ScoreboardCallback(learner, monitor='val_loss', scoreboard=scoreboard, config=config)
+    cb_scoreboard = ScoreboardCallback(learner,
+                                       monitor='val_loss',
+                                       scoreboard=scoreboard,
+                                       config=config,
+                                       mode=config.scoreboard.mode)
     #cbs = [cb_cal_map5, cb_scoreboard, cb_early_stop]
     #cbs = [cb_scoreboard, cb_early_stop]
     cbs = [cb_scoreboard]#, cb_cal_map5]
 
-    method = 2
+    if config.model.pars.pretrain:
+        model_file = ''
+        if len(scoreboard) and scoreboard[0]['file'].is_file():
+            model_file = scoreboard[0]['file'].name[:-4]
+        elif (pdir.models/f'{name}-coarse.pth').is_file():
+            model_file = f'{name}-coarse'
+
+        #model_file = 'CosNet-densenet121-MixLoss-coarse'
+        if model_file:
+            print(f'loading {model_file}')
+            learner.load(model_file, with_opt=True)
+            #cur_epoch = int(re.search(r'-(\d+)$', model_file).group(1))
+
     if method == 1:
         #coarse stage
-        if not config.model.pars.pretrain:
+        if model_file == '':
             #learner.load(f'{name}-coarse')
-            learner.fit_one_cycle(16, 1e-2)#, callbacks=cbs)
+            learner.fit_one_cycle(8, 1e-2)#, callbacks=cbs)
             fname = f'{name}-coarse'
             print(f'saving to {fname}')
             learner.save(fname)
@@ -129,16 +169,6 @@ def run(config):
             learner.lr_find()
             learner.recorder.plot()
             plt.savefig('lr_find.png')
-        else:
-            if len(scoreboard) and scoreboard[0]['file'].is_file():
-                model_file = scoreboard[0]['file'].name[:-4]
-            else:
-                model_file = f'{name}-coarse'
-            #model_file = 'CosNet-densenet121-MixLoss-coarse'
-            print(f'loading {model_file}')
-            learner.load(model_file, with_opt=True)
-            #cur_epoch = int(re.search(r'-(\d+)$', model_file).group(1))
-            #learner.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
 
         # Fine tuning
         #learner.to_fp16()
@@ -153,7 +183,7 @@ def run(config):
     elif method == 2:
         learner.clip_grad()
         learner.unfreeze()
-        max_lr = 1e-4
+        max_lr = 1e-1
         lrs = [max_lr/100, max_lr/10, max_lr]
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 
@@ -163,7 +193,8 @@ def run(config):
         learner.unfreeze()
         max_lr = 1e-3
         lrs = [max_lr/100, max_lr/10, max_lr]
-        learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
+        learner.fit(config.train.n_epoch, lrs, callbacks=cbs)
+
 
 
 
