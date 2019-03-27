@@ -17,7 +17,7 @@ model:
     margin: 0.35
     n_class: 5004
     drop_rate: 0.5
-    pretrain: 0
+    pretrain: 1
 
 
 train:
@@ -26,9 +26,9 @@ train:
   batch_size: 32
   batches_per_epoch: 500
   n_epoch: 600
-  patience: 30
+  patience: 500
   balance: 0
-  method: 3
+  method: 1
   wd: !!float 1e-1
   new_whale: 0
 

@@ -30,6 +30,7 @@ train:
   balance: 0
   method: 3
   wd: !!float 1e-1
+  new_whale: 0
 
 val:
   cal_metric_once: True

@@ -1,4 +1,5 @@
 from fastprogress import master_bar, progress_bar
+from fastai.vision.transform import *
 from fastai.vision import *
 from fastai.metrics import accuracy
 from fastai.basic_data import *
@@ -39,7 +40,6 @@ def run(config):
 
     batch_size = config.train.batch_size
     n_process = config.n_process
-    from fastai.vision.transform import *
     vision_trans = get_transforms(do_flip=False,
                                   p_lighting=0.9, max_lighting=0.6,
                                   max_rotate=18,
@@ -47,6 +47,8 @@ def run(config):
                                   p_affine=0.9,
                                   xtra_tfms=[
                                       RandTransform(tfm=TfmCoord (jitter), kwargs={'magnitude': 0.01}),
+                                      RandTransform(tfm=TfmCoord (symmetric_warp), kwargs={'magnitude': (-0.2, 0.2)}),
+                                      RandTransform(tfm=TfmPixel (cutout), kwargs={'n_holes': (1, 4), 'length': (5, 20)}),
 
                                   ],
                                   )
@@ -157,16 +159,17 @@ def run(config):
 
     if method == 1:
         #coarse stage
-        #learner.load(f'{name}-coarse')
-        learner.fit_one_cycle(2, 1e-2)#, callbacks=cbs)
-        fname = f'{name}-coarse'
-        print(f'saving to {fname}')
-        learner.save(fname)
+        if model_file == '':
+            #learner.load(f'{name}-coarse')
+            learner.fit_one_cycle(8, 1e-2)#, callbacks=cbs)
+            fname = f'{name}-coarse'
+            print(f'saving to {fname}')
+            learner.save(fname)
 
-        print('LR finding ...')
-        learner.lr_find()
-        learner.recorder.plot()
-        plt.savefig('lr_find.png')
+            print('LR finding ...')
+            learner.lr_find()
+            learner.recorder.plot()
+            plt.savefig('lr_find.png')
 
         # Fine tuning
         #learner.to_fp16()
