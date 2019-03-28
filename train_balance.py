@@ -29,7 +29,8 @@ def run(config):
     df = filter_df(df, n_new_whale=config.train.new_whale, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
     #val_idxes = split_data_set(df, seed=1)
-    val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
+    #val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
+    val_idxes = split_whale_idx(df, new_whale_method=0, seed=97)
 
     #scoreboard = load_dump(pdir.models)
     scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
@@ -82,7 +83,7 @@ def run(config):
     train_dl = DataLoader(
         data.train_ds,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         drop_last=True,
         sampler=sampler,
         num_workers=config.n_process
@@ -127,7 +128,8 @@ def run(config):
                           metrics=[accuracy, mapkfast]
                           #metrics=[accuracy, map5, mapkfast])
                           )
-    #learner.data.classes[-1] = 'new_whale'
+    if config.train.new_whale != 0:
+        learner.data.classes[-1] = 'new_whale'
     #learner.to_fp16()
     learner.clip_grad(2.)
 
@@ -143,14 +145,15 @@ def run(config):
     #cbs = [cb_scoreboard, cb_early_stop]
     cbs = [cb_scoreboard]#, cb_cal_map5]
 
+    model_file = ''
     if config.model.pars.pretrain:
-        model_file = ''
         if len(scoreboard) and scoreboard[0]['file'].is_file():
             model_file = scoreboard[0]['file'].name[:-4]
         elif (pdir.models/f'{name}-coarse.pth').is_file():
             model_file = f'{name}-coarse'
 
         #model_file = 'CosNet-densenet121-MixLoss-coarse'
+        #model_file = 'densenet121-82'
         if model_file:
             print(f'loading {model_file}')
             learner.load(model_file, with_opt=True)

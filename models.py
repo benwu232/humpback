@@ -153,13 +153,13 @@ class CosHead(nn.Module):
                                   #CosSimCenters(self.in_features, self.out_features)
                                   )
 
+        self.cos_classifier = CosSimCenters(self.in_features, self.out_features-1)
+
         for m in self.head.children():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
                 #nn.init.kaiming_normal_(self.head)
 
-        self.cos_classifier = CosSimCenters(self.in_features, self.out_features)
-        nn.init.xavier_normal_(self.cos_classifier.weight)
         self.binary_classifier = nn.Linear(self.in_features, self.out_features)
         nn.init.xavier_normal_(self.binary_classifier.weight)
 
@@ -305,26 +305,31 @@ class CosFaceLoss(nn.CrossEntropyLoss):
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
 
 
-def bce(input, target, OHEM_percent=None):
-    if OHEM_percent is None:
+def bce(input, target, n_hard=None):
+    if n_hard is None:
         loss = F.binary_cross_entropy_with_logits(input, target, reduction='mean')
         return loss
     else:
-        loss = F.binary_cross_entropy_with_logits(input, target, reduce=False)
-        value, index= loss.topk(int(10008 * OHEM_percent), dim=1, largest=True, sorted=True)
+        target_onehot = onehot_enc(target, 5005)
+        loss = F.binary_cross_entropy_with_logits(input, target_onehot, reduce=False)
+        value, index = loss.topk(n_hard, dim=1, largest=True, sorted=False)
         return value.mean()
 
 
 class MixLoss(nn.Module):
     def __init__(self, radius=60, margin=0.4, unknow_class=5004):
         super().__init__()
-        self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)
+        self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
         self.unknown = unknow_class
         self.cnt = 0
         self.avg_loss_known = 20.0
         self.n_hard = 200
+        self.step = 0
 
     def forward(self, logits, target):
+        self.step += 1
+        self.n_hard = int(linear_schedule(self.step, [2000, 20, 0, 20000]))
+
         cos_logits = logits[:, :5004]
         bin_logits = logits[:, 5004:]
 
@@ -335,17 +340,21 @@ class MixLoss(nn.Module):
         if len(target_known):
             loss_known = self.cos_face_loss(logits_known, target_known)
             self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
-            ohem_loss = logits_known[:, :self.n_hard].mean()
+
+            known_value = logits_known.gather(1, target_known.view(-1, 1))
+            ohem_loss = logits_known.topk(self.n_hard, largest=True, sorted=False, dim=1)[0]# - known_value
+            ohem_loss = ohem_loss.mean() * 10
 
         #for all = known + new_whale, binary_loss
-        bce_loss = bce(bin_logits, target)
-        #todo: bce_ohem_loss
+        bce_loss = bce(bin_logits, target, self.n_hard)
+        bce_loss *= 100
 
-        loss = loss_known + ohem_loss + bce_loss
+        #loss = self.avg_loss_known# + ohem_loss# + bce_loss
+        loss = loss_known# + ohem_loss + bce_loss
 
         self.cnt += 1
         if self.cnt % 400 == 0:
-            print(f'bce_loss={bce_loss}, loss_known={loss_known}, ohem_loss={ohem_loss}\n')
+            print(f'n_hard={self.n_hard}, bce_loss={bce_loss}, loss_known={loss_known}, ohem_loss={ohem_loss}\n')
 
         return loss
 

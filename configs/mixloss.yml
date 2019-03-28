@@ -15,9 +15,9 @@ model:
     n_emb: 1024
     radius: 70
     margin: 0.35
-    n_class: 5004
+    n_class: 5005
     drop_rate: 0.5
-    pretrain: 0
+    pretrain: 1
 
 
 train:
@@ -30,7 +30,7 @@ train:
   balance: 0
   method: 1
   wd: !!float 1e-1
-  new_whale: 0
+  new_whale: -1
 
 val:
   cal_metric_once: True

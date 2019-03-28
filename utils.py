@@ -960,7 +960,7 @@ def linear_schedule(step, pars):
     return start_value - (step - start_step) * (start_value - end_value) / (end_step - start_step)
 
 
-linear_decay = partial(linear_schedule, pars=(1.0, 0.05, 2, 12))
+#linear_decay = partial(linear_schedule, pars=(1.0, 0.05, 2, 12))
 
 
 def rand_batch(batch_size, ds_len, digit_len):
