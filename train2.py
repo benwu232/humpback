@@ -47,8 +47,8 @@ def run(config):
     learner = Learner(data,
                       CosNet(config),
                       loss_func=nn.CrossEntropyLoss(),
-                      #loss_func=ArcFaceLoss(radius=config.model.pars.radius, margin=config.model.pars.margin),
-                      #loss_func=CosFaceLoss(radius=config.model.pars.radius, margin=0.0),
+                      #loss_func=ArcFaceLoss(radius=config.model.radius, margin=config.model.margin),
+                      #loss_func=CosFaceLoss(radius=config.model.radius, margin=0.0),
                       metrics=[accuracy, map5, mapkfast],
                       #metrics=[mapkfast],
                       path='../'

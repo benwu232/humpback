@@ -126,34 +126,69 @@ class BinaryHead(nn.Module):
 class CosHead(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.in_features = config.model.pars.n_emb
-        self.out_features = config.model.pars.n_class
+        self.in_features = config.model.n_emb
+        self.out_features = config.model.n_class
 
         self.head = nn.Sequential(AdaptiveConcatPool2d(),
                                   Flatten(),
                                   nn.BatchNorm1d(self.in_features*2),
-                                  nn.Dropout(config.model.pars.drop_rate/2),
+                                  nn.Dropout(config.model.drop_rate/2),
                                   nn.Linear(self.in_features*2, 2048),
                                   nn.PReLU(),
                                   nn.BatchNorm1d(2048),
-                                  nn.Dropout(config.model.pars.drop_rate),
+                                  nn.Dropout(config.model.drop_rate),
                                   nn.Linear(2048, self.out_features),
                                   )
 
         self.head = nn.Sequential(#AdaptiveConcatPool2d(),
                                   #Flatten(),
                                   nn.BatchNorm2d(self.in_features),
-                                  nn.Dropout(config.model.pars.drop_rate),
+                                  nn.Dropout(config.model.drop_rate),
                                   Flatten(),
                                   nn.Linear(self.in_features*49, self.in_features),
                                   #nn.PReLU(),
                                   nn.BatchNorm1d(self.in_features),
-                                  #nn.Dropout(config.model.pars.drop_rate),
+                                  #nn.Dropout(config.model.drop_rate),
+                                  #nn.Linear(2048, self.out_features),
+                                  CosSimCenters(self.in_features, self.out_features)
+                                  )
+
+        for m in self.head.children():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                #nn.init.kaiming_normal_(self.head)
+
+    def cal_features(self, x):
+        return self.forward(x)
+
+    def forward(self, x):
+        cos_th = self.head(x)
+        return cos_th
+
+
+class MixHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.in_features = config.model.n_emb
+        self.out_features = config.model.n_class
+
+        self.head = nn.Sequential(#AdaptiveConcatPool2d(),
+                                  #Flatten(),
+                                  nn.BatchNorm2d(self.in_features),
+                                  nn.Dropout(config.model.drop_rate),
+                                  Flatten(),
+                                  nn.Linear(self.in_features*49, self.in_features),
+                                  #nn.PReLU(),
+                                  nn.BatchNorm1d(self.in_features),
+                                  #nn.Dropout(config.model.drop_rate),
                                   #nn.Linear(2048, self.out_features),
                                   #CosSimCenters(self.in_features, self.out_features)
                                   )
 
-        self.cos_classifier = CosSimCenters(self.in_features, self.out_features-1)
+        #self.bn1 = nn.BatchNorm1d(self.in_features)
+        self.sphere_multi = CosSimCenters(self.in_features, self.out_features - 1)
+        self.sphere_binary = nn.Linear(self.out_features - 1, 1)
+        nn.init.xavier_normal_(self.sphere_binary.weight)
 
         for m in self.head.children():
             if isinstance(m, nn.Linear):
@@ -167,21 +202,22 @@ class CosHead(nn.Module):
         return self.forward(x)
 
     def forward(self, x):
-        features = self.head(x)
-        cos_th = self.cos_classifier(features)
-        bin_logits = self.binary_classifier(features)
-        return torch.cat([cos_th, bin_logits], dim=1)
+        ho = self.head(x)
+        cos_th = self.sphere_multi(ho)
+        bin_logits = self.sphere_binary(cos_th)
+        #return torch.cat([cos_th, bin_logits], dim=1)
+        return [cos_th, bin_logits]
 
 
 class CosNet(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.n_emb = config.model.pars.n_emb
-        self.radius = config.model.pars.radius
-        self.n_class = config.model.pars.n_class
+        self.n_emb = config.model.n_emb
+        self.radius = config.model.radius
+        self.n_class = config.model.n_class
         self.body = get_body(config)
         nf = num_features_model(nn.Sequential(*self.body.children())) * 2
-        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.pars.drop_rate, concat_pool=True, bn_final=True)
+        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.drop_rate, concat_pool=True, bn_final=True)
         self.cos_sim = CosSimCenters(self.n_emb, self.n_class)
         self.unknown_classifier = nn.Linear(self.n_class, 1)
 
@@ -207,12 +243,12 @@ class CosNet(nn.Module):
 class CosNet1(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.n_emb = config.model.pars.n_emb
-        self.radius = config.model.pars.radius
-        self.n_class = config.model.pars.n_class
+        self.n_emb = config.model.n_emb
+        self.radius = config.model.radius
+        self.n_class = config.model.n_class
         self.body = get_body(config)
         nf = num_features_model(nn.Sequential(*self.body.children())) * 2
-        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.pars.drop_rate, concat_pool=True, bn_final=True)
+        self.head = create_head(nf, self.n_emb, lin_ftrs=[1024], ps=config.model.drop_rate, concat_pool=True, bn_final=True)
         self.cos_sim = CosSimCenters(self.n_emb, self.n_class)
 
     def forward(self, x):
@@ -305,7 +341,51 @@ class CosFaceLoss(nn.CrossEntropyLoss):
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
 
 
-def bce(input, target, n_hard=None):
+def focal_loss(logits, targets, weights=1.0, use_focal=True, gamma=2.0):
+    ce = F.cross_entropy(logits, targets.long(), reduction='none')
+    softmax = F.softmax(logits, dim=-1)
+    target_probs = softmax.gather(dim=1, index=targets.long().view(-1, 1))
+    focal = 1.0
+    if use_focal:
+        focal = torch.pow(1 - target_probs, gamma)
+    focal_loss = focal * weights * ce.view(-1, 1)
+    return focal_loss.mean()
+
+
+def bin_focal_loss(logits, targets, weights=1.0, use_focal=True, gamma=2.0, reduction='mean'):
+    ce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+    #ce = F.binary_cross_entropy(logits, targets, reduction='none')
+    softmax = F.softmax(logits, dim=-1)
+    target_probs = softmax.gather(dim=1, index=targets.long())
+    focal = 1.0
+    if use_focal:
+        focal = torch.pow(1 - target_probs, gamma)
+    focal_loss = focal * weights * ce
+    if reduction == 'mean':
+        return focal_loss.mean()
+    elif reduction == 'sum':
+        return focal_loss.sum()
+    else:
+        return focal_loss
+
+
+
+def bce(logits, target, n_hard=20, margin=0.4, use_focal=True):
+    target_onehot = onehot_enc(target, 5005)
+    #probs = torch.sigmoid(logits)
+    #probs = (probs * (1 - target_onehot) + torch.relu(probs - margin) * target_onehot)
+    logits = (logits * (1 - target_onehot) + (logits - margin) * target_onehot)
+    #loss = F.binary_cross_entropy_with_logits(input, target_onehot, reduce=False)
+    loss = bin_focal_loss(logits, target_onehot, gamma=3.0, use_focal=use_focal, reduction='none')
+    loss = loss.topk(n_hard, 1)[0]
+    #target_value = loss.gather(1, target.view(-1, 1))
+    #sec_avg = (loss.topk(n_hard, largest=True, sorted=False, dim=1)[0][:, -sec_len:].sum(1) - target_value).mean() / sec_len
+    #ohem_loss = torch.relu(target_value - sec_avg + margin)
+    #return ohem_loss.mean()
+    return loss.mean()
+
+
+def bce1(input, target, n_hard=None):
     if n_hard is None:
         loss = F.binary_cross_entropy_with_logits(input, target, reduction='mean')
         return loss
@@ -313,6 +393,7 @@ def bce(input, target, n_hard=None):
         target_onehot = onehot_enc(target, 5005)
         loss = F.binary_cross_entropy_with_logits(input, target_onehot, reduce=False)
         value, index = loss.topk(n_hard, dim=1, largest=True, sorted=False)
+
         return value.mean()
 
 
@@ -321,17 +402,22 @@ class MixLoss(nn.Module):
         super().__init__()
         self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
         self.unknown = unknow_class
-        self.cnt = 0
+        self.cnt = -1
         self.avg_loss_known = 20.0
         self.n_hard = 200
         self.step = 0
+        self.sec_len = 20
+        self.margin = 0.6
+        self.n_thresh = 0.01
 
     def forward(self, logits, target):
         self.step += 1
         self.n_hard = int(linear_schedule(self.step, [2000, 20, 0, 20000]))
+        acc = acc_with_unknown(logits, target)
+        map5 = mapk_with_unknown(logits, target)
 
-        cos_logits = logits[:, :5004]
-        bin_logits = logits[:, 5004:]
+        cos_logits = logits[0]
+        bin_logits = logits[1].view_as(target)
 
         #for known, cos_loss
         logits_known = cos_logits[target!=self.unknown]
@@ -341,20 +427,58 @@ class MixLoss(nn.Module):
             loss_known = self.cos_face_loss(logits_known, target_known)
             self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
 
-            known_value = logits_known.gather(1, target_known.view(-1, 1))
-            ohem_loss = logits_known.topk(self.n_hard, largest=True, sorted=False, dim=1)[0]# - known_value
-            ohem_loss = ohem_loss.mean() * 10
+        loss_bin = F.binary_cross_entropy_with_logits(bin_logits, (target==self.unknown).float())
+        loss_bin *= 10
 
-        #for all = known + new_whale, binary_loss
-        bce_loss = bce(bin_logits, target, self.n_hard)
-        bce_loss *= 100
-
-        #loss = self.avg_loss_known# + ohem_loss# + bce_loss
-        loss = loss_known# + ohem_loss + bce_loss
+        loss = loss_known + loss_bin
 
         self.cnt += 1
         if self.cnt % 400 == 0:
-            print(f'n_hard={self.n_hard}, bce_loss={bce_loss}, loss_known={loss_known}, ohem_loss={ohem_loss}\n')
+            print(f'n_hard={self.n_hard}, loss_bin={loss_bin}, loss_known={loss_known} \n')
+
+        return loss
+
+    def forward1(self, logits, target):
+        self.step += 1
+        self.n_hard = int(linear_schedule(self.step, [2000, 20, 0, 20000]))
+
+        cos_logits = logits[0]
+        bin_logits = logits[1]
+
+        #for known, cos_loss
+        logits_known = cos_logits[target!=self.unknown]
+        target_known = target[target!=self.unknown]
+        loss_known = self.avg_loss_known
+        if len(target_known):
+            loss_known = self.cos_face_loss(logits_known, target_known)
+            self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
+
+            target_known_value = logits_known.gather(1, target_known.view(-1, 1))
+            sec_avg = (logits_known.topk(self.n_hard, largest=True, sorted=False, dim=1)[0][:, -self.sec_len:].sum(1) - target_known_value).mean() / self.sec_len
+            ohem_loss = torch.relu(sec_avg - target_known_value + self.margin)
+            ohem_loss = ohem_loss.mean() * 10
+
+        #for all = known + new_whale, binary_loss
+        bce_loss = 0.0
+        bce_loss = bce(bin_logits, target, self.n_hard)
+        bce_loss *= 10
+
+        #penalize the new_whale examples which are too high
+        logits_unknown = cos_logits[target==self.unknown]
+        n_loss = 0.0
+        if len(logits_unknown):
+            softmax_unknown = F.softmax(logits_unknown, -1)
+            softmax_unknown = softmax_unknown.max(dim=1)[0]
+            n_loss = F.relu(softmax_unknown - self.n_thresh).mean()
+            n_loss *= 100
+
+        #loss = self.avg_loss_known# + ohem_loss# + bce_loss
+        #loss = loss_known + ohem_loss + bce_loss
+        loss = loss_known + bce_loss + n_loss
+
+        self.cnt += 1
+        if self.cnt % 400 == 0:
+            print(f'n_hard={self.n_hard}, bce_loss={bce_loss}, loss_known={loss_known}, ohem_loss={ohem_loss}, n_loss={n_loss}\n')
 
         return loss
 

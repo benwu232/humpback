@@ -10,14 +10,15 @@ model:
   #backbone: 'resnet18'
   #backbone: 'resnet34'
   #backbone: 'resnet50'
-  pars:
-    #n_emb: 512
-    n_emb: 1024
-    radius: 70
-    margin: 0.35
-    n_class: 5005
-    drop_rate: 0.5
-    pretrain: 1
+
+  #n_emb: 512
+  n_emb: 1024
+  head: 'MixHead'
+  radius: 70
+  margin: 0.35
+  n_class: 5005
+  drop_rate: 0.5
+  pretrain: 1
 
 
 train:

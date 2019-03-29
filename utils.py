@@ -268,6 +268,14 @@ def apk(actual, predicted, k=10):
 
     return score / min(len(actual), k)
 
+def acc_with_unknown(preds, targs):
+    softmax = preds[0].max(1)[1].view_as(targs)
+    bin = (torch.sigmoid(preds[1]) > 0.5).long() * 5004
+    bin = bin.view_as(targs)
+    if bin.sum() > 0:
+        value = torch.where(bin!=0, bin, softmax)
+    acc = (value == targs).sum().float() / len(targs)
+    return acc
 
 def mapk(actual, predicted, k=10):
     return np.mean([apk(a, p, k) for a, p in zip(actual, predicted)])
@@ -279,6 +287,7 @@ def map5(preds, targs):
     return torch.tensor(res)
 
 def mapkfast(preds, targs, k=5):
+    preds = preds[0][:, :5004]
     #print(preds.shape, targs.shape)
     top_5 = preds.topk(k, 1)[1]
     targs = targs.to(preds.device)
@@ -287,6 +296,25 @@ def mapkfast(preds, targs, k=5):
         scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
+def mapk_with_unknown(preds, targs, k=5):
+    bin_logits= preds[1]
+    preds = preds[0]
+    #print(preds.shape, targs.shape)
+    top_5 = preds.topk(k, 1)[1]
+    bin = (torch.sigmoid(bin_logits) > 0.5).long() * 5004
+    bin = bin.view_as(targs)
+    if bin.sum() > 0:
+        for row in range(len(targs)):
+            if bin[row]:
+                top_5[row, 1:] = top_5[row, :-1]
+                top_5[row, 0] = bin[row]
+    targs = targs.to(preds.device)
+    scores = torch.zeros(len(preds), k).float().to(preds.device)
+    for kk in range(k):
+        scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
+    return scores.max(dim=1)[0].mean()
+
+'''
 def accuracy_with_unknown(preds, targs, k=5, unknown_idx=5004):
     #print(preds.shape, targs.shape)
     targs = targs.detach().cpu().numpy()
@@ -318,6 +346,7 @@ def mapk_with_unknown(preds, targs, k=5, unknown_idx=5004):
         #scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
         scores[:,kk] = (top_5[:,kk] == targs) / float(kk+1)
     return torch.tensor(scores.max(axis=1).mean())
+'''
 
 def top_5_preds(preds): return np.argsort(preds.numpy())[:, ::-1][:, :5]
 

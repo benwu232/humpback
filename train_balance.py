@@ -30,7 +30,8 @@ def run(config):
     df_fname = df.set_index('Image')
     #val_idxes = split_data_set(df, seed=1)
     #val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
-    val_idxes = split_whale_idx(df, new_whale_method=0, seed=97)
+    #val_idxes = split_whale_idx(df, new_whale_method=0, seed=97)
+    val_idxes = split_whale_idx(df, new_whale_method=config.train.new_whale, seed=97)
 
     #scoreboard = load_dump(pdir.models)
     scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
@@ -118,14 +119,19 @@ def run(config):
     else:
         true_wd = False
 
+    if config.model.head == 'MixHead':
+        head = MixHead
+    elif config.model.head == 'CosHead':
+        head = CosHead
+
     learner = cnn_learner(data_bunch,
                           backbone,
                           loss_func=loss_fn,
-                          custom_head=CosHead(config),
+                          custom_head=head(config),
                           init=None,
                           true_wd=true_wd,
                           path=pdir.root,
-                          metrics=[accuracy, mapkfast]
+                          metrics=[acc_with_unknown, mapk_with_unknown]
                           #metrics=[accuracy, map5, mapkfast])
                           )
     if config.train.new_whale != 0:
@@ -146,7 +152,7 @@ def run(config):
     cbs = [cb_scoreboard]#, cb_cal_map5]
 
     model_file = ''
-    if config.model.pars.pretrain:
+    if config.model.pretrain:
         if len(scoreboard) and scoreboard[0]['file'].is_file():
             model_file = scoreboard[0]['file'].name[:-4]
         elif (pdir.models/f'{name}-coarse.pth').is_file():
@@ -163,7 +169,7 @@ def run(config):
         #coarse stage
         if model_file == '':
             #learner.load(f'{name}-coarse')
-            learner.fit_one_cycle(8, 1e-2)#, callbacks=cbs)
+            learner.fit_one_cycle(15, 1e-2)#, callbacks=cbs)
             fname = f'{name}-coarse'
             print(f'saving to {fname}')
             learner.save(fname)
