@@ -5,6 +5,9 @@ import yaml
 import logging
 import pathlib
 from pathlib import Path
+import numpy as np
+import PIL
+import matplotlib.pyplot as plt
 
 def load_config(config_file):
     with open(config_file, 'r') as fid:
@@ -145,3 +148,24 @@ class Scoreboard():
     def is_full(self):
         return len(self.sb) >= self.sb_len
 
+
+
+imagenet_means, imagenet_std = map(np.array, ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]))
+ds_means, ds_std = map(np.array, ([0.467, 0.467, 0.467], [0.163, 0.163, 0.163]))
+
+# normalize = lambda x: (x - imagenet_means) / imagenet_std
+# denormalize = lambda x: x * imagenet_std + imagenet_means
+normalize = lambda x: (x - ds_means * 255) / (ds_std * 255)
+denormalize = lambda x: x * ds_std + ds_means
+
+def open_image(fn):
+    x = PIL.Image.open(fn).convert('RGB')
+    return np.asarray(x)
+
+def show_image(im, figsize=None, ax=None, alpha=None):
+    if im.shape[0] == 3: im = im.transpose(1,2,0)
+    if im.min() < 0 and im.ndim == 3: im=denormalize(im); im = np.clip(im, 0, 1) # this is quite horrible and can lead to bugs
+    if not ax: fig,ax = plt.subplots(figsize=figsize)
+    ax.imshow(im, alpha=alpha)
+    ax.set_axis_off()
+    return ax

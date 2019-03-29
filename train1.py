@@ -2,6 +2,7 @@ from fastprogress import master_bar, progress_bar
 from fastai.vision import *
 from fastai.metrics import accuracy
 from fastai.basic_data import *
+from fastai.callbacks import *
 import pandas as pd
 from torch import optim
 import re
@@ -21,13 +22,21 @@ from models import *
 
 
 def run(config):
-    name = f'{config.task.name}-fine'
+    name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
-    df0 = pd.read_csv(LABELS)
-    df = filter_df(df0, n_new_whale=False, more_than=1)
+    df = pd.read_csv(LABELS)
+    change_new_whale(df, new_whale_id)
+    #df = filter_df(df, n_new_whale=-1, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
-    val_idxes = split_whale_idx(df, nth_fold=0, new_whale_method=0, seed=1, new_whale_id='new_whale')
+    val_idxes = split_data_set(df, seed=1)
 
+    #scoreboard = load_dump(pdir.models)
+    scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
+    sb_len = config.scoreboard.len
+    scoreboard = Scoreboard(scoreboard_file, sb_len, sort='dec')
+
+    batch_size = config.train.batch_size
+    n_process = config.n_process
     data = (
         ImageList
             .from_df(df, TRAIN, cols=['Image'])
@@ -38,31 +47,60 @@ def run(config):
             .label_from_df(cols='Id')
             .add_test(ImageList.from_folder(TEST))
             .transform(get_transforms(do_flip=False), size=SZ, resize_method=ResizeMethod.SQUISH)
-            .databunch(bs=BS, num_workers=NUM_WORKERS, path='data')
+            .databunch(bs=batch_size, num_workers=n_process, path=pdir.root)
             .normalize(imagenet_stats)
     )
 
-    net = CosNet(config)
-    learner = Learner(data,
-                      CosNet(config),
-                      #loss_func=nn.CrossEntropyLoss(),
-                      loss_func=ArcFaceLoss(radius=config.model.radius),
-                      path='../'
-                      )
+    backbone = get_backbone(config)
+    loss_fn = get_loss_fn(config)
+    learner = cnn_learner(data,
+                          backbone,
+                          loss_func=loss_fn,
+                          custom_head=CosHead(config),
+                          init=None,
+                          #path=pdir.root,
+                          metrics=[accuracy, map5, mapkfast])
+    learner.clip_grad(2.)
 
-    #learner.split([learner.model.body[:6], learner.model[6:], learner.model.head, learner.model.metric])
+
+    #coarse stage
+    if not config.train.pretrained_file:
+        #learner.load(f'{name}-coarse')
+        learner.fit_one_cycle(8, 1e-2)
+        fname = f'{name}-coarse'
+        print(f'saving to {fname}')
+        learner.save(fname)
+
+        print('LR finding ...')
+        learner.lr_find()
+        learner.recorder.plot()
+        plt.savefig('lr_find.png')
+    else:
+        if len(scoreboard) and scoreboard[0]['file'].is_file():
+            model_file = scoreboard[0]['file'].name[:-4]
+        else:
+            model_file = config.train.pretrained_file
+        learner.load(model_file, with_opt=True)
+        #learner.load(f'{self.scoreboard[0][-1].name[:-4]}', purge=False)
+
+    # Fine tuning
     learner.clip_grad()
+    learner.unfreeze()
 
-    #learner.load(f'{name}-coarse')
-    learner.fit_one_cycle(20, 1e-2)
-    learner.save(f'{name}-coarse')
+    max_lr = 1e-3
+    lrs = [max_lr/100, max_lr/10, max_lr]
+    cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
+    cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
+    cb_cal_map5 = CalMap5Callback(learner)
+    cb_scoreboard = ScoreboardCallback(learner, scoreboard=scoreboard, config=config)
+    #cbs = [cb_cal_map5, cb_scoreboard, cb_early_stop]
+    #cbs = [cb_scoreboard, cb_early_stop]
+    cbs = [cb_scoreboard]
+
+    learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 
 
 
-    print('LR finding ...')
-    learner.lr_find()
-    learner.recorder.plot()
-    plt.savefig('lr_find.png')
 
 def parse_args():
     description = 'Train humpback whale identification'
