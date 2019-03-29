@@ -413,8 +413,8 @@ class MixLoss(nn.Module):
     def forward(self, logits, target):
         self.step += 1
         self.n_hard = int(linear_schedule(self.step, [2000, 20, 0, 20000]))
-        acc = acc_with_unknown(logits, target)
-        map5 = mapk_with_unknown(logits, target)
+        #acc = acc_with_unknown(logits, target)
+        #map5 = mapk_with_unknown(logits, target)
 
         cos_logits = logits[0]
         bin_logits = logits[1].view_as(target)
