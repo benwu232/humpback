@@ -208,6 +208,40 @@ class MixHead(nn.Module):
         #return torch.cat([cos_th, bin_logits], dim=1)
         return [cos_th, bin_logits]
 
+def predict_mixhead(model, dl):
+    model.eval()
+    with torch.no_grad():
+        cos_o, bin_o = [], []
+        cnt = 0
+        y_list = []
+        for x, y in progress_bar(dl):
+            x = torch.tensor(x).to(device)
+            [cos_logits, bin_logits] = model(x)
+            cos_o.append(cos_logits)
+            bin_o.append(bin_logits)
+            y_list.append(y)
+            #cnt += 1
+            #if cnt == 3:
+            #    break
+
+        cos_o = torch.cat(cos_o)
+        bin_o = torch.cat(bin_o).view(-1)
+        y = torch.cat(y_list).view(-1)
+
+    return [cos_o, bin_o], y
+
+def topk_mix(cos_logits, bin_logits):
+        top5 = cos_logits.topk(5, 1)[1]
+        bin = (torch.sigmoid(bin_logits) > 0.5).long() * 5004
+
+        for row in range(len(bin)):
+            if bin[row]:
+                top5[row, 1:] = top5[row, :-1]
+                top5[row, 0] = bin[row]
+        return top5
+
+
+
 
 class CosNet(nn.Module):
     def __init__(self, config):
@@ -398,9 +432,10 @@ def bce1(input, target, n_hard=None):
 
 
 class MixLoss(nn.Module):
-    def __init__(self, radius=60, margin=0.4, unknow_class=5004):
+    def __init__(self, radius=60, margin=0.4, model=None, unknow_class=5004):
         super().__init__()
-        self.cos_face_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
+        self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
+        #self.cos_loss = ArcFaceLoss(radius=radius, margin=margin)#, reduction='none')
         self.unknown = unknow_class
         self.cnt = -1
         self.avg_loss_known = 20.0
@@ -409,6 +444,7 @@ class MixLoss(nn.Module):
         self.sec_len = 20
         self.margin = 0.6
         self.n_thresh = 0.01
+        self.model = model
 
     def forward(self, logits, target):
         self.step += 1
@@ -424,17 +460,24 @@ class MixLoss(nn.Module):
         target_known = target[target!=self.unknown]
         loss_known = self.avg_loss_known
         if len(target_known):
-            loss_known = self.cos_face_loss(logits_known, target_known)
+            loss_known = self.cos_loss(logits_known, target_known)
             self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
 
         loss_bin = F.binary_cross_entropy_with_logits(bin_logits, (target==self.unknown).float())
         loss_bin *= 10
 
-        loss = loss_known + loss_bin
+        #l2 regularization
+        reg_loss = torch.tensor(0, dtype=torch.float32).to(device)
+        if self.model:
+            for param in self.model.parameters():
+                reg_loss += (param ** 2).sum()
+            reg_loss *= 3e-5
+
+        loss = loss_known + loss_bin + reg_loss
 
         self.cnt += 1
-        if self.cnt % 400 == 0:
-            print(f'n_hard={self.n_hard}, loss_bin={loss_bin}, loss_known={loss_known} \n')
+        if self.cnt % 1000 == 0:
+            print(f'loss_bin={loss_bin}, loss_known={loss_known}, reg_loss={reg_loss} \n')
 
         return loss
 
@@ -450,7 +493,7 @@ class MixLoss(nn.Module):
         target_known = target[target!=self.unknown]
         loss_known = self.avg_loss_known
         if len(target_known):
-            loss_known = self.cos_face_loss(logits_known, target_known)
+            loss_known = self.cos_loss(logits_known, target_known)
             self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
 
             target_known_value = logits_known.gather(1, target_known.view(-1, 1))
@@ -669,6 +712,8 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
 
     def on_train_end(self, **kwargs):
         "Load the best model."
+        #print('tmp saving model to linshi')
+        #self.learn.save(f'linshi')
         if len(self.scoreboard):
             self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
 

@@ -51,9 +51,9 @@ def find_new_whale_idx(classes):
             return k
 
 
-def change_new_whale(df, new_name='z_new_whale'):
+def change_new_whale(df, old_name='new_whale', new_name='z_new_whale'):
     for k in range(len(df)):
-        if df.at[k, 'Id'] == 'new_whale':
+        if df.at[k, 'Id'] == old_name:
             df.at[k, 'Id'] = new_name
 
 
@@ -269,9 +269,11 @@ def apk(actual, predicted, k=10):
     return score / min(len(actual), k)
 
 def acc_with_unknown(preds, targs):
+    targs = targs.to(device)
     softmax = preds[0].max(1)[1].view_as(targs)
     bin = (torch.sigmoid(preds[1]) > 0.5).long() * 5004
     bin = bin.view_as(targs)
+    value = softmax
     if bin.sum() > 0:
         value = torch.where(bin!=0, bin, softmax)
     acc = (value == targs).sum().float() / len(targs)
@@ -300,18 +302,18 @@ def mapk_with_unknown(preds, targs, k=5):
     bin_logits= preds[1]
     preds = preds[0]
     #print(preds.shape, targs.shape)
-    top_5 = preds.topk(k, 1)[1]
+    top5 = preds.topk(k, 1)[1]
     bin = (torch.sigmoid(bin_logits) > 0.5).long() * 5004
     bin = bin.view_as(targs)
     if bin.sum() > 0:
         for row in range(len(targs)):
             if bin[row]:
-                top_5[row, 1:] = top_5[row, :-1]
-                top_5[row, 0] = bin[row]
+                top5[row, 1:] = top5[row, :-1]
+                top5[row, 0] = bin[row]
     targs = targs.to(preds.device)
     scores = torch.zeros(len(preds), k).float().to(preds.device)
     for kk in range(k):
-        scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
+        scores[:,kk] = (top5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
 '''

@@ -25,11 +25,47 @@ from dataset import *
 def run(config):
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
-    df, trn_idxes, val_idxes, labels, label2idx = prepare_df(config)
-    trn_ds = WhaleDataSet(config, df, trn_idxes, labels, label2idx)
-    next(iter(trn_ds))
+    batch_size = config.train.batch_size
+    trn_ds = WhaleDataSet(config, mode='train')
+    val_ds = WhaleDataSet(config, mode='val')
+    test_ds = WhaleDataSet(config, mode='test')
+
+    trn_dl = DataLoader(
+        trn_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        #sampler=sampler,
+        pin_memory=True,
+        num_workers=config.n_process
+    )
+
+    val_dl = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        pin_memory=True,
+        num_workers=config.n_process
+    )
+
+    tst_dl = DataLoader(
+        test_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        pin_memory=True,
+        num_workers=config.n_process
+    )
+
+    #trn_dl, val_dl, tst_dl = map(lambda ts: DeviceDataLoader(*ts), zip([trn_dl, val_dl, tst_dl], [device] * 3) )
+    data_bunch = ImageDataBunch(trn_dl, val_dl, test_dl=tst_dl, device=device)
+    #data_bunch = DataBunch(trn_dl, val_dl, test_dl=tst_dl, device=device)
+    #data_bunch.add_tfm(normalize)
+    #data_bunch = data_bunch.normalize(imagenet_stats)
 
 
+    '''
 
     df = pd.read_csv(LABELS)
     change_new_whale(df, new_whale_id)
@@ -39,6 +75,7 @@ def run(config):
     #val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
     #val_idxes = split_whale_idx(df, new_whale_method=0, seed=97)
     val_idxes = split_whale_idx(df, new_whale_method=config.train.new_whale, seed=97)
+    '''
 
     #scoreboard = load_dump(pdir.models)
     scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
@@ -48,6 +85,7 @@ def run(config):
 
     batch_size = config.train.batch_size
     n_process = config.n_process
+    '''
     vision_trans = get_transforms(do_flip=False,
                                   p_lighting=0.9, max_lighting=0.6,
                                   max_rotate=18,
@@ -117,6 +155,7 @@ def run(config):
     #data_bunch.add_tfm(normalize)
     data_bunch = data_bunch.normalize(imagenet_stats)
 
+    '''
     backbone = get_backbone(config)
     loss_fn = get_loss_fn(config)
 
@@ -145,6 +184,7 @@ def run(config):
         learner.data.classes[-1] = 'new_whale'
     #learner.to_fp16()
     learner.clip_grad(2.)
+    loss_fn.model = learner.model
 
     cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
     cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
@@ -176,7 +216,7 @@ def run(config):
         #coarse stage
         if model_file == '':
             #learner.load(f'{name}-coarse')
-            learner.fit_one_cycle(15, 1e-2)#, callbacks=cbs)
+            learner.fit_one_cycle(9, 3e-3)#, callbacks=cbs)
             fname = f'{name}-coarse'
             print(f'saving to {fname}')
             learner.save(fname)
@@ -204,10 +244,10 @@ def run(config):
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 
     elif method == 3:
-        learner.fit_one_cycle(5, 1e-2)#, callbacks=cbs)
+        learner.fit_one_cycle(9, 1e-3, callbacks=cbs)
         learner.clip_grad()
         learner.unfreeze()
-        max_lr = 1e-3
+        max_lr = 1e-4
         lrs = [max_lr/100, max_lr/10, max_lr]
         learner.fit(config.train.n_epoch, lrs, callbacks=cbs)
 

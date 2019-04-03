@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import PIL
 import matplotlib.pyplot as plt
+import cv2
 
 def load_config(config_file):
     with open(config_file, 'r') as fid:
@@ -78,12 +79,12 @@ def linear_decay(step, pars):
 
 
 class BaseDirs():
-    def __init__(self, root_path='', data_path='input'):
+    def __init__(self, root_path='/media/wb/backup/work/whale', data_path='input'):
         dir_list = []
         if root_path == '':
             self.root = Path().resolve().parent
         else:
-            self.root = root_path
+            self.root = Path(root_path)
 
         self.data = self.root/data_path
         self.data.mkdir(exist_ok=True)
@@ -151,16 +152,38 @@ class Scoreboard():
 
 
 imagenet_means, imagenet_std = map(np.array, ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]))
-ds_means, ds_std = map(np.array, ([0.467, 0.467, 0.467], [0.163, 0.163, 0.163]))
+#ds_means, ds_std = map(np.array, ([0.467, 0.467, 0.467], [0.163, 0.163, 0.163]))
+ds_means = imagenet_means
+ds_std = imagenet_std
 
 # normalize = lambda x: (x - imagenet_means) / imagenet_std
 # denormalize = lambda x: x * imagenet_std + imagenet_means
-normalize = lambda x: (x - ds_means * 255) / (ds_std * 255)
-denormalize = lambda x: x * ds_std + ds_means
+#normalize = lambda x: (x - ds_means * 255) / (ds_std * 255)
+#denormalize = lambda x: int(x * ds_std * 255 + ds_means * 255)
+
+def denormalize(img, mean, std, max_pixel_value=255.0):
+    mean = np.array(mean, dtype=np.float32)
+    mean *= max_pixel_value
+
+    std = np.array(std, dtype=np.float32)
+    std *= max_pixel_value
+
+    img = img.astype(np.float32)
+    img *= std
+    img += mean
+    return img.astype(np.uint8)
 
 def open_image(fn):
     x = PIL.Image.open(fn).convert('RGB')
     return np.asarray(x)
+
+def show_image_pil(im):
+    if im.shape[0] == 3:
+        im = im.transpose(1,2,0)
+    if im.min() < 0 and im.ndim == 3:
+        im=denormalize(im, imagenet_means, imagenet_std)
+    img = PIL.Image.fromarray(im, 'RGB')
+    img.show()
 
 def show_image(im, figsize=None, ax=None, alpha=None):
     if im.shape[0] == 3: im = im.transpose(1,2,0)
@@ -169,3 +192,26 @@ def show_image(im, figsize=None, ax=None, alpha=None):
     ax.imshow(im, alpha=alpha)
     ax.set_axis_off()
     return ax
+
+BOX_COLOR = (255, 0, 0)
+TEXT_COLOR = (255, 255, 255)
+
+
+def visualize_bbox(img, bbox, color=BOX_COLOR, thickness=2):
+    cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color=color, thickness=thickness)
+    return img
+
+def visualize_bbox1(img, bbox, color=BOX_COLOR, thickness=2):
+    x_min, y_min, w, h = bbox
+    x_min, x_max, y_min, y_max = int(x_min), int(x_min + w), int(y_min), int(y_min + h)
+    cv2.rectangle(img, (x_min, y_min), (x_max, y_max), color=color, thickness=thickness)
+    return img
+
+
+def visualize(annotations, category_id_to_name):
+    img = annotations['image'].copy()
+    for idx, bbox in enumerate(annotations['bboxes']):
+        img = visualize_bbox(img, bbox, annotations['category_id'][idx], category_id_to_name)
+    plt.figure(figsize=(12, 12))
+    plt.imshow(img)
+
