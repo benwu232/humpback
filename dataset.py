@@ -48,7 +48,7 @@ class WhaleDataSet(Dataset):
                  config,
                  mode='train',
                  **_):
-        self.bboxes = pd.read_csv(BOXES)
+        self.bboxes = pd.read_csv(config.env.bbox_path)
         self.bboxes = self.bboxes.set_index('Image')
         self.df, self.trn_idxes, self.val_idxes, self.labels, self.label2idx = prepare_df(config)
         self.mode = mode

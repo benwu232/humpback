@@ -25,6 +25,7 @@ from dataset import *
 def run(config):
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
+    config.env.update(init_env(config))
     batch_size = config.train.batch_size
     trn_ds = WhaleDataSet(config, mode='train')
     val_ds = WhaleDataSet(config, mode='val')

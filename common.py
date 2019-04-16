@@ -30,6 +30,12 @@ def load_dump(dump_file):
         dump = pickle.load(fp)
         return dump
 
+def set_par(pars, key, key_default):
+    if key in pars:
+        return pars[key]
+    else:
+        return key_default
+
 def init_logger(name='qf', to_console=True, log_file=None, level=logging.DEBUG,
                 msg_fmt='[%(asctime)s]  %(message)s', time_fmt="%Y-%m-%d %H:%M:%S"):
     # create logger
@@ -79,7 +85,8 @@ def linear_decay(step, pars):
 
 
 class BaseDirs():
-    def __init__(self, root_path='/media/wb/backup/work/whale', data_path='input'):
+    #def __init__(self, root_path='/media/wb/backup/work/whale', data_path='input'):
+    def __init__(self, root_path, data_path='input'):
         dir_list = []
         if root_path == '':
             self.root = Path().resolve().parent
@@ -109,10 +116,11 @@ class BaseDirs():
         new_dir.mkdir(exist_ok=True)
 
 start_timestamp = now2str()
-
-pdir = BaseDirs()
-plog_file = pdir.log/f'{start_timestamp}.log'
-plog = init_logger(log_file=plog_file)
+#pdir = BaseDirs()
+#plog_file = pdir.log/f'{start_timestamp}.log'
+#plog = init_logger(log_file=plog_file)
+pdir = None
+plog = None
 
 #todo scoreboard
 class Scoreboard():
@@ -215,3 +223,19 @@ def visualize(annotations, category_id_to_name):
     plt.figure(figsize=(12, 12))
     plt.imshow(img)
 
+
+def init_env(config):
+    global pdir, plog
+    env = EasyDict()
+    env.timestamp = now2str()
+    if 'root_path' in config.env:
+        env.pdir = BaseDirs(config.env.root_path)
+        pdir = env.pdir
+
+        with_log = set_par(config.env, 'with_log', False)
+        if with_log:
+            plog_file = env.pdir.log/f'{env.timestamp}.log'
+            #global plog
+            env.plog = init_logger(log_file=plog_file)
+
+    return env

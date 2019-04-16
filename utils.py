@@ -16,15 +16,15 @@ import torchvision
 import tensorboardX as tx
 from common import *
 
-PATH = './'
-TRAIN = '../input/train/'
-TEST = '../input/test/'
-LABELS = '../input/train.csv'
-BOXES = '../input/bounding_boxes.csv'
-MODELS = './models'
+#PATH = './'
+#TRAIN = '../input/train/'
+#TEST = '../input/test/'
+#LABELS = '../input/train.csv'
+#BOXES = '../input/bounding_boxes.csv'
+#MODELS = './models'
 SZ = 224
 BS = 32
-NUM_WORKERS = 0
+#NUM_WORKERS = 0
 
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
