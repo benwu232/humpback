@@ -91,18 +91,19 @@ device = torch.device("cuda" if USE_CUDA else "cpu")
 
 #name = f'siamese_resnet34_224'
 #arch = models.resnet34
-name = f'siamese_resnet18_224'
 arch = models.resnet18
+name = f'siamese_resnet18_224'
+arch = models.densenet121
 
 im_size = 224
-train_batch_size = 64
+train_batch_size = 10
 val_batch_size = 128
 if use_kaggle:
     dl_workers = 0
 else:
     dl_workers = 6
 SEED=0
-emb_len = 256
+emb_len = 512
 
 
 # In[6]:
@@ -143,14 +144,14 @@ data = (
         #.transform([None, None], size=im_size, resize_method=ResizeMethod.SQUISH)
         .transform(im_tfms, size=im_size, resize_method=ResizeMethod.SQUISH)
         .databunch(bs=train_batch_size, num_workers=dl_workers, path=root_path)
-        #.normalize(imagenet_stats)
+        .normalize(imagenet_stats)
 )
 
-data.add_tfm(normalize_batch)
+#data.add_tfm(normalize_batch)
 
 train_dl = DataLoader(
-    SiameseGanDs(data.train_dl, coach.get_que()),
-    #SiameseDs(data.train_dl),
+    #SiameseGanDs(data.train_dl, coach.get_que()),
+    SiameseDs3(data.train_dl),
     batch_size=train_batch_size,
     shuffle=False,
     #collate_fn=collate_siamese,
@@ -158,7 +159,7 @@ train_dl = DataLoader(
 )
 
 val_dl = DataLoader(
-    SiameseDs(data.valid_dl),
+    SiameseDs3(data.valid_dl),
     #SiameseDs(data.valid_dl),
     batch_size=val_batch_size,
     shuffle=False,
@@ -179,7 +180,7 @@ train_bunch = ImageDataBunch(train_dl, val_dl, device=device)
 
 #siamese = SiameseNetwork(arch=arch)
 #siamese = SiameseNet(emb_len=emb_len, arch=arch, forward_type='similarity', drop_rate=0.5)
-siamese = SiameseNet(emb_len=emb_len, arch=arch, forward_type='distance', drop_rate=0.5)
+siamese = SiameseNet(emb_len=emb_len, arch=arch, n_slice=32, drop_rate=0.5)
 #siamese = SiameseNetwork2(arch=arch)
 siamese.to(device)
 
@@ -187,9 +188,9 @@ siamese.to(device)
 # In[11]:
 
 
-learn = Learner(train_bunch,
+learn = LearnerEx(train_bunch,
                   siamese,
-                  #enable_validate=True,
+                  enable_validate=False,
                   path=learn_path,
                   #loss_func=BCEWithLogitsFlat(),
                   loss_func=ContrastiveLoss(margin=contrastive_neg_margin),
@@ -203,7 +204,7 @@ learn.coach = coach
 learn.coach.learn = learn
 
 
-learn.split([learn.model.cnn[:6], learn.model.cnn[6:], learn.model.fc])
+#learn.split([learn.model.cnn[:6], learn.model.cnn[6:], learn.model.fc])
 
 
 # In[13]:
@@ -214,14 +215,15 @@ cb_save_model = SaveModelCallback(learn, every="epoch", name=name)
 cb_coach = CbCoachTrain(learn)
 cb_dists = CbDists(learn)
 #cb_siamese_validate = SiameseValidateCallback(learn, txlog)
-cbs = [cb_save_model, cb_coach, cb_dists]#, cb_siamese_validate]
+#cbs = [cb_save_model, cb_coach, cb_dists]#, cb_siamese_validate]
+cbs = [cb_save_model, cb_dists]#, cb_siamese_validate]
 
 
 # In[14]:
 
 
 learn.freeze_to(-1)
-learn.fit_one_cycle(3, callbacks=cbs)
+learn.fit_one_cycle(3)#, callbacks=cbs)
 learn.unfreeze()
 
 

@@ -184,6 +184,7 @@ def run(config):
         learner.data.classes[-1] = 'new_whale'
     #learner.to_fp16()
     learner.clip_grad(2.)
+    loss_fn.model = learner.model
 
     cb_save_model = SaveModelCallback(learner, every="epoch", name=name)
     cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
@@ -215,7 +216,7 @@ def run(config):
         #coarse stage
         if model_file == '':
             #learner.load(f'{name}-coarse')
-            learner.fit_one_cycle(15, 1e-2)#, callbacks=cbs)
+            learner.fit_one_cycle(9, 3e-3)#, callbacks=cbs)
             fname = f'{name}-coarse'
             print(f'saving to {fname}')
             learner.save(fname)
@@ -243,10 +244,10 @@ def run(config):
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 
     elif method == 3:
-        learner.fit_one_cycle(5, 1e-2)#, callbacks=cbs)
+        learner.fit_one_cycle(9, 1e-3, callbacks=cbs)
         learner.clip_grad()
         learner.unfreeze()
-        max_lr = 1e-3
+        max_lr = 1e-4
         lrs = [max_lr/100, max_lr/10, max_lr]
         learner.fit(config.train.n_epoch, lrs, callbacks=cbs)
 

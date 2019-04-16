@@ -19,15 +19,13 @@ import torchvision
 import pprint
 from utils import *
 from models import *
-from dataset import *
-
 
 
 def run(config):
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
     df = pd.read_csv(LABELS)
-    change_new_whale(df, new_name=new_whale_id)
+    change_new_whale(df, new_whale_id)
     df = filter_df(df, n_new_whale=-1, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
     val_idxes = split_data_set(df, seed=1)
@@ -56,68 +54,44 @@ def run(config):
     data.classes[-1] = 'new_whale'
     backbone = get_backbone(config)
     loss_fn = get_loss_fn(config)
-
-    if config.model.head == 'MixHead':
-        head = MixHead
-    elif config.model.head == 'CosHead':
-        head = CosHead
-
     learner = cnn_learner(data,
                           backbone,
                           loss_func=loss_fn,
-                          custom_head=head(config),
+                          custom_head=CosHead(config),
                           init=None,
                           #path=pdir.root,
                           metrics=[accuracy, map5, mapkfast])
 
     if len(scoreboard) and scoreboard[0]['file'].is_file():
         model_file = scoreboard[0]['file'].name[:-4]
-    elif (pdir.models/f'{name}-coarse.pth').is_file():
-        model_file = f'{name}-coarse'
     else:
-        print('something wrong')
-        exit()
-
-    model_file = 'densenet121-38'
+        model_file = config.train.pretrained_file
+    model_file = 'densenet121-8'
+    #model_file = 'CosNet-densenet121-MixLoss-coarse'
     print(f'loading {model_file} ...')
     learner.load(model_file)
 
-    test_ds = WhaleDataSet(config, mode='test')
-    tst_dl = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        pin_memory=True,
-        num_workers=config.n_process
-    )
+    preds, _ = learner.get_preds(DatasetType.Test)#, n_batch=20)
+    preds_unknown = (torch.sigmoid(preds[:, 0]) > 0.5)
+    preds_known = preds[:, 1:]
+    probs = F.softmax(preds_known, dim=1)
+    probs, tops = probs.topk(5, dim=1)
 
-    val_ds = WhaleDataSet(config, mode='val')
-    val_dl = DataLoader(
-        val_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        pin_memory=True,
-        num_workers=config.n_process
-    )
+    #top_5 = preds_known.topk(k, 1)[1].detach().cpu().numpy()
+    for ri in range(len(preds_known)):
+        if preds_unknown[ri]:
+            tops[ri, 1:] = tops[ri, :-1]
+            tops[ri, 0] = 5004
 
-    logits, y = predict_mixhead(learner.model, tst_dl)
-    #acc = acc_with_unknown(logits, y)
-    #top5 = mapk_with_unknown(logits, y)
-    #print(acc, top5)
-    #exit()
-
-    tops = topk_mix(*logits)
     tops = tops.cpu().numpy()
     test_df = pd.read_csv(pdir.data/'sample_submission.csv')
     test_df = test_df.set_index('Image')
     with tqdm.tqdm(total=len(tops)) as pbar:
         for ri, class_idxes in enumerate(tops):
-            fname = test_ds.test_list[ri].name
+            fname = learner.data.test_ds.x.items[ri].name
             row = ''
             for class_idx in class_idxes:
-                row += test_ds.classes[class_idx]
+                row += learner.data.classes[class_idx]
                 row += ' '
                 pass
             test_df.at[fname, 'Id'] = row

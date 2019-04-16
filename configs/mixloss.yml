@@ -1,0 +1,64 @@
+
+
+n_process: 6
+
+task:
+  name: &task_name 'CosNet'
+
+model:
+  backbone: 'densenet121'
+  #backbone: 'resnet18'
+  #backbone: 'resnet34'
+  #backbone: 'resnet50'
+
+  #n_emb: 512
+  n_emb: 1024
+  head: 'MixHead'
+  radius: 70
+  margin: 0.5
+  n_class: 5005
+  drop_rate: 0.5
+  pretrain: 1
+
+
+train:
+  #pretrained_file: 'Arc_11'
+  #pretrained_file: 'Arc-coarse-resnet18'
+  batch_size: 24
+  batches_per_epoch: 500
+  n_epoch: 600
+  patience: 500
+  balance: 0
+  method: 1
+  wd: !!float 1e-2
+  new_whale: -1
+  #new_whale: 111
+
+val:
+  cal_metric_once: True
+  batch_size: 32
+
+loss:
+  #name: 'cross_entropy'
+
+  #name: 'ArcFace'
+  #radius: 70
+  #margin: 0.5
+
+  name: 'MixLoss'
+  radius: 70
+  margin: 0.35
+
+transform:
+  name: 'align_transform'
+  num_preprocessor: 6
+  params:
+    size: 320
+    align: True
+    align_p: 0.5
+
+scoreboard:
+  len: 11
+  sort: 'inc'
+  mode: 'min'
+

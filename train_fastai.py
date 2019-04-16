@@ -25,57 +25,14 @@ from dataset import *
 def run(config):
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
-    batch_size = config.train.batch_size
-    trn_ds = WhaleDataSet(config, mode='train')
-    val_ds = WhaleDataSet(config, mode='val')
-    test_ds = WhaleDataSet(config, mode='test')
-
-    trn_dl = DataLoader(
-        trn_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=True,
-        #sampler=sampler,
-        pin_memory=True,
-        num_workers=config.n_process
-    )
-
-    val_dl = DataLoader(
-        val_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        pin_memory=True,
-        num_workers=config.n_process
-    )
-
-    tst_dl = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        pin_memory=True,
-        num_workers=config.n_process
-    )
-
-    #trn_dl, val_dl, tst_dl = map(lambda ts: DeviceDataLoader(*ts), zip([trn_dl, val_dl, tst_dl], [device] * 3) )
-    data_bunch = ImageDataBunch(trn_dl, val_dl, test_dl=tst_dl, device=device)
-    #data_bunch = DataBunch(trn_dl, val_dl, test_dl=tst_dl, device=device)
-    #data_bunch.add_tfm(normalize)
-    #data_bunch = data_bunch.normalize(imagenet_stats)
-
-
-    '''
-
     df = pd.read_csv(LABELS)
-    change_new_whale(df, new_whale_id)
+    change_new_whale(df, new_name=new_whale_id)
     df = filter_df(df, n_new_whale=config.train.new_whale, new_whale_id=new_whale_id)
     df_fname = df.set_index('Image')
     #val_idxes = split_data_set(df, seed=1)
     #val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
     #val_idxes = split_whale_idx(df, new_whale_method=0, seed=97)
     val_idxes = split_whale_idx(df, new_whale_method=config.train.new_whale, seed=97)
-    '''
 
     #scoreboard = load_dump(pdir.models)
     scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
@@ -85,7 +42,6 @@ def run(config):
 
     batch_size = config.train.batch_size
     n_process = config.n_process
-    '''
     vision_trans = get_transforms(do_flip=False,
                                   p_lighting=0.9, max_lighting=0.6,
                                   max_rotate=18,
@@ -155,7 +111,6 @@ def run(config):
     #data_bunch.add_tfm(normalize)
     data_bunch = data_bunch.normalize(imagenet_stats)
 
-    '''
     backbone = get_backbone(config)
     loss_fn = get_loss_fn(config)
 
