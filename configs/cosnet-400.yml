@@ -1,10 +1,10 @@
 
 
-n_process: 4
+n_process: 6
 env:
-  root_path: '/kaggle'
+  root_path: '/media/wb/backup/work/whale'
   #root_path: '/home/wb/work/whale/'
-  bbox_path: '/kaggle/working/aux_data/bounding_boxes.csv'
+  bbox_path: '/media/wb/backup/work/whale/humpback/aux_data/bounding_boxes.csv'
   with_log: True
 
 task:
@@ -29,10 +29,10 @@ model:
 train:
   #pretrained_file: 'Arc_11'
   #pretrained_file: 'Arc-coarse-resnet18'
-  batch_size: 32
+  batch_size: 24
   batches_per_epoch: 500
-  n_epoch: 200
-  patience: 100
+  n_epoch: 600
+  patience: 500
   balance: 0
   method: 1
   wd: !!float 1e-2
