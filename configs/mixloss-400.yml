@@ -57,6 +57,7 @@ loss:
   name: 'MixLoss'
   radius: 70
   margin: 0.5
+  l2_factor: !!float 1e-2
 
 #transform:
 #  name: 'align_transform'

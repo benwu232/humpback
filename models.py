@@ -51,7 +51,8 @@ def get_loss_fn(config):
     elif loss == 'MixLoss':
         radius = config.loss.radius
         margin = config.loss.margin
-        loss_fn = MixLoss(radius=radius, margin=margin)
+        l2_factor = config.loss.l2_factor
+        loss_fn = MixLoss(radius=radius, margin=margin, l2_factor=l2_factor)
     return loss_fn
 
 class ArcModule1(nn.Module):
@@ -438,7 +439,7 @@ def bce1(input, target, n_hard=None):
 
 
 class MixLoss(nn.Module):
-    def __init__(self, radius=60, margin=0.4, model=None, unknow_class=5004):
+    def __init__(self, radius=60, margin=0.4, model=None, l2_factor=1e-3, unknow_class=5004):
         super().__init__()
         #self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
         self.cos_loss = ArcFaceLoss(radius=radius, margin=margin)#, reduction='none')
@@ -450,7 +451,8 @@ class MixLoss(nn.Module):
         self.sec_len = 20
         self.margin = 0.6
         self.n_thresh = 0.01
-        self.model = model
+        self.l2_factor = l2_factor
+        #self.model = model
 
     def forward(self, logits, target):
         self.step += 1
@@ -478,7 +480,7 @@ class MixLoss(nn.Module):
         if self.model:
             for param in self.model.parameters():
                 reg_loss += (param ** 2).sum()
-            reg_loss *= 1e-2
+            reg_loss *= self.l2_factor
 
         #loss = loss_known + loss_bin + reg_loss
         loss = loss_known + loss_bin + reg_loss
