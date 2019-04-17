@@ -8,7 +8,7 @@ env:
   with_log: True
 
 task:
-  name: &task_name 'CosNet'
+  name: &task_name 'CosNet-no_new_whale'
 
 model:
   backbone: 'densenet121'
@@ -37,7 +37,7 @@ train:
   method: 1
   wd: !!float 1e-2
   #new_whale: -1
-  new_whale: 111
+  new_whale: 0
 
 val:
   cal_metric_once: True
@@ -50,21 +50,21 @@ loss:
   #radius: 70
   #margin: 0.5
 
-  #name: 'ArcFace'
-  #radius: 70
-  #margin: 0.5
-
-  name: 'MixLoss'
+  name: 'ArcFace'
   radius: 70
-  margin: 0.35
+  margin: 0.5
 
-transform:
-  name: 'align_transform'
-  num_preprocessor: 6
-  params:
-    size: 320
-    align: True
-    align_p: 0.5
+  #name: 'MixLoss'
+  #radius: 70
+  #margin: 0.35
+
+#transform:
+#  name: 'align_transform'
+#  num_preprocessor: 6
+#  params:
+#    size: 320
+#    align: True
+#    align_p: 0.5
 
 scoreboard:
   len: 11

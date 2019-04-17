@@ -79,7 +79,7 @@ def run(config):
     '''
 
     #scoreboard = load_dump(pdir.models)
-    scoreboard_file = pdir.models/f'scoreboard-{name}.pkl'
+    scoreboard_file = config.env.pdir.models/f'scoreboard-{name}.pkl'
     scoreboard = Scoreboard(scoreboard_file,
                             config.scoreboard.len,
                             sort=config.scoreboard.sort)
@@ -177,7 +177,7 @@ def run(config):
                           custom_head=head(config),
                           init=None,
                           true_wd=true_wd,
-                          path=pdir.root,
+                          path=config.env.pdir.root,
                           metrics=[acc_with_unknown, mapk_with_unknown]
                           #metrics=[accuracy, map5, mapkfast])
                           )
@@ -203,7 +203,7 @@ def run(config):
     if config.model.pretrain:
         if len(scoreboard) and scoreboard[0]['file'].is_file():
             model_file = scoreboard[0]['file'].name[:-4]
-        elif (pdir.models/f'{name}-coarse.pth').is_file():
+        elif (config.env.pdir.models/f'{name}-coarse.pth').is_file():
             model_file = f'{name}-coarse'
 
         #model_file = 'CosNet-densenet121-MixLoss-coarse'
@@ -217,7 +217,7 @@ def run(config):
         #coarse stage
         if model_file == '':
             #learner.load(f'{name}-coarse')
-            learner.fit_one_cycle(9, 3e-3)#, callbacks=cbs)
+            learner.fit_one_cycle(9, 1e-3)#, callbacks=cbs)
             fname = f'{name}-coarse'
             print(f'saving to {fname}')
             learner.save(fname)
@@ -232,7 +232,7 @@ def run(config):
         learner.clip_grad()
         learner.unfreeze()
 
-        max_lr = 1e-3
+        max_lr = 1e-4
         lrs = [max_lr/100, max_lr/10, max_lr]
 
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)

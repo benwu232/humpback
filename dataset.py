@@ -1,5 +1,3 @@
-
-from common import *
 from utils import *
 import torch
 from torch.utils.data.dataset import Dataset
@@ -10,7 +8,7 @@ import imgaug as ia
 from imgaug import augmenters as iaa
 
 def prepare_df(config):
-    df = pd.read_csv(LABELS)
+    df = pd.read_csv(config.env.pdir.data/'train.csv')
     new_whale_id = 'z_new_whale'
     change_new_whale(df, new_name=new_whale_id)
     df = filter_df(df, n_new_whale=config.train.new_whale, new_whale_id=new_whale_id)
@@ -23,8 +21,9 @@ def prepare_df(config):
     all_idxes = list(range(len(df)))
     trn_idxes = list(set(all_idxes) - set(val_idxes))
     labels = sorted(df.Id.unique().tolist())
-    labels[-1] = 'new_whale'
-    change_new_whale(df, old_name=new_whale_id, new_name='new_whale')
+    if 'new_whale' in labels[-1]:
+        labels[-1] = 'new_whale'
+        change_new_whale(df, old_name=new_whale_id, new_name='new_whale')
     label2idx = {}
     for k, label in enumerate(labels):
         label2idx[label] = k
@@ -52,31 +51,32 @@ class WhaleDataSet(Dataset):
         self.bboxes = self.bboxes.set_index('Image')
         self.df, self.trn_idxes, self.val_idxes, self.labels, self.label2idx = prepare_df(config)
         self.mode = mode
-        self.c = len(self.df.Id.unique())
+        #self.c = len(self.df.Id.unique())
+        self.c = len(self.labels)
         self.classes = self.labels
 
         train_seq = iaa.Sequential([
             iaa.Sometimes(0.5, iaa.AverageBlur(k=(3,3))),
             iaa.Sometimes(0.5, iaa.MotionBlur(k=(3,5))),
-            iaa.Sometimes(0.5, iaa.GaussianBlur(sigma=(0.0, 3.0))),
-            iaa.AddToHueAndSaturation((-20, 20)),
+            #iaa.Sometimes(0.5, iaa.GaussianBlur(sigma=(0.0, 3.0))),
+            #iaa.AddToHueAndSaturation((-20, 20)),
             iaa.Add((-10, 10), per_channel=0.5),
             iaa.Multiply((0.9, 1.1), per_channel=0.5),
-            iaa.Dropout(p=(0, 0.2)),
-            iaa.CoarseDropout(0.02, size_percent=0.5),
-            iaa.AdditiveGaussianNoise(scale=(0, 0.03*255)),
+            #iaa.Dropout(p=(0, 0.2)),
+            #iaa.CoarseDropout(0.02, size_percent=0.5),
+            #iaa.AdditiveGaussianNoise(scale=(0, 0.03*255)),
             iaa.Sometimes(0.7, iaa.Affine(
                 scale={'x': (0.9,1.1), 'y': (0.9,1.1)},
                 translate_percent={'x': (-0.05,0.05), 'y': (-0.05,0.05)},
                 shear=(-10,10),
                 rotate=(-10,10)
                 )),
-            iaa.Sometimes(0.3, iaa.Grayscale(alpha=(0.8,1.0))),
+            iaa.Sometimes(0.5, iaa.Grayscale(alpha=(0.8,1.0))),
             ], random_order=True)
 
         if mode == 'train':
             self.idxes = self.trn_idxes
-            self.data_path=Path(TRAIN)
+            self.data_path=Path(config.env.pdir.data/'train')
             #self.x = []
             #self.y = []
             #for idx in self.idxes:
@@ -85,11 +85,11 @@ class WhaleDataSet(Dataset):
             self.trn_trfm = train_seq.to_deterministic()
         elif mode == 'val':
             self.idxes = self.val_idxes
-            self.data_path=Path(TRAIN)
+            self.data_path=Path(config.env.pdir.data/'train')
         elif mode == 'test':
-            self.test_list = sorted(list(Path(TEST).glob('*.jpg')))
+            self.test_list = sorted(list(Path(config.env.pdir.data/'test').glob('*.jpg')))
             self.idxes = list(range(len(self.test_list)))
-            self.data_path=Path(TEST)
+            self.data_path=Path(config.env.pdir.data/'test')
         self.len = len(self.idxes)
 
 

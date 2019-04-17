@@ -342,7 +342,8 @@ class ArcFaceLoss(nn.CrossEntropyLoss):
         return F.cross_entropy(logits, target, weight=self.weight,
                                ignore_index=self.ignore_index, reduction=self.reduction)
 
-    def forward(self, cos_th, target):
+    def forward(self, input, target):
+        cos_th = input[0]
         sin_th = torch.sqrt(1.0 - torch.pow(cos_th, 2))
         cos_th_m = cos_th * self.cos_m - sin_th * self.sin_m        #cos(theta + margin)
         cos_th_m = torch.where(cos_th > self.threshold, cos_th_m, cos_th - self.mm)
@@ -369,7 +370,8 @@ class CosFaceLoss(nn.CrossEntropyLoss):
         self.margin = margin
 
     #@weak_script_method
-    def forward(self, cos_th, target):
+    def forward(self, input, target):
+        cos_th = input[0]
         target_onehot = onehot_enc(target, n_class=cos_th.shape[-1])
         logits = self.radius * (cos_th * (1 - target_onehot) + (cos_th - self.margin) * target_onehot)
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
