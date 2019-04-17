@@ -1,8 +1,8 @@
 from utils import *
 import torch
 from torch.utils.data.dataset import Dataset
-#from albumentations import *
-#from albumentations.imgaug import *
+from albumentations import *
+from albumentations.imgaug import *
 from PIL import Image
 import imgaug as ia
 from imgaug import augmenters as iaa
