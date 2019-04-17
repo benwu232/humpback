@@ -232,7 +232,7 @@ def run(config):
         learner.clip_grad()
         learner.unfreeze()
 
-        max_lr = 1e-4
+        max_lr = 1e-3
         lrs = [max_lr/100, max_lr/10, max_lr]
 
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)

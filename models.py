@@ -343,7 +343,9 @@ class ArcFaceLoss(nn.CrossEntropyLoss):
                                ignore_index=self.ignore_index, reduction=self.reduction)
 
     def forward(self, input, target):
-        cos_th = input[0]
+        cos_th = input
+        if not isinstance(input, torch.Tensor):
+            cos_th = input[0]
         sin_th = torch.sqrt(1.0 - torch.pow(cos_th, 2))
         cos_th_m = cos_th * self.cos_m - sin_th * self.sin_m        #cos(theta + margin)
         cos_th_m = torch.where(cos_th > self.threshold, cos_th_m, cos_th - self.mm)
@@ -371,7 +373,9 @@ class CosFaceLoss(nn.CrossEntropyLoss):
 
     #@weak_script_method
     def forward(self, input, target):
-        cos_th = input[0]
+        cos_th = input
+        if not isinstance(input, torch.Tensor):
+            cos_th = input[0]
         target_onehot = onehot_enc(target, n_class=cos_th.shape[-1])
         logits = self.radius * (cos_th * (1 - target_onehot) + (cos_th - self.margin) * target_onehot)
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
@@ -436,8 +440,8 @@ def bce1(input, target, n_hard=None):
 class MixLoss(nn.Module):
     def __init__(self, radius=60, margin=0.4, model=None, unknow_class=5004):
         super().__init__()
-        self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
-        #self.cos_loss = ArcFaceLoss(radius=radius, margin=margin)#, reduction='none')
+        #self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
+        self.cos_loss = ArcFaceLoss(radius=radius, margin=margin)#, reduction='none')
         self.unknown = unknow_class
         self.cnt = -1
         self.avg_loss_known = 20.0
@@ -450,7 +454,7 @@ class MixLoss(nn.Module):
 
     def forward(self, logits, target):
         self.step += 1
-        self.n_hard = int(linear_schedule(self.step, [2000, 20, 0, 20000]))
+        #self.n_hard = int(linear_schedule(self.step, [2000, 20, 0, 20000]))
         #acc = acc_with_unknown(logits, target)
         #map5 = mapk_with_unknown(logits, target)
 
@@ -465,16 +469,18 @@ class MixLoss(nn.Module):
             loss_known = self.cos_loss(logits_known, target_known)
             self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
 
-        loss_bin = F.binary_cross_entropy_with_logits(bin_logits, (target==self.unknown).float())
-        loss_bin *= 10
+        #loss_bin = F.binary_cross_entropy_with_logits(bin_logits, (target==self.unknown).float())
+        #loss_bin *= 10
+        loss_bin = 0.0
 
         #l2 regularization
         reg_loss = torch.tensor(0, dtype=torch.float32).to(device)
         if self.model:
             for param in self.model.parameters():
                 reg_loss += (param ** 2).sum()
-            reg_loss *= 3e-5
+            reg_loss *= 1e-2
 
+        #loss = loss_known + loss_bin + reg_loss
         loss = loss_known + loss_bin + reg_loss
 
         self.cnt += 1
