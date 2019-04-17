@@ -1,6 +1,6 @@
 
 
-n_process: 2
+n_process: 0
 env:
   root_path: '/kaggle'
   #root_path: '/home/wb/work/whale/'
