@@ -4,7 +4,7 @@ n_process: 4
 env:
   root_path: '/kaggle'
   #root_path: '/home/wb/work/whale/'
-  bbox_path: '/kaggle/working/humback/aux_data/bounding_boxes.csv'
+  bbox_path: '/kaggle/working/humpback/aux_data/bounding_boxes.csv'
   with_log: True
 
 task:
