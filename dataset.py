@@ -156,16 +156,16 @@ class WhaleDataSet(Dataset):
         return [trans.transpose(2, 0, 1), label_idx]
 
 
-trn_trfm = Compose([
-    Crop(),
-    Resize(SZ, SZ),
-    #RandomCrop(224, 224),
-    #Normalize(
-    #    mean=[0.485, 0.456, 0.406],
-    #    std=[0.229, 0.224, 0.225],
-    #),
-    #ToTensor()
-])
+#trn_trfm = Compose([
+#    Crop(),
+#    Resize(SZ, SZ),
+#    #RandomCrop(224, 224),
+#    #Normalize(
+#    #    mean=[0.485, 0.456, 0.406],
+#    #    std=[0.229, 0.224, 0.225],
+#    #),
+#    #ToTensor()
+#])
 
 
 if __name__ == '__main__':
