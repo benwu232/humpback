@@ -702,8 +702,8 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
         if not self.scoreboard.is_full() or self.operator(score, self.scoreboard[-1]['score']):
             store_file = f'{self.prefix}-{epoch}'
             save_path = self.learn.save(store_file, return_path=True)
-            plog.info('$$$$$$$$$$$$$ Good score {} at training step {} $$$$$$$$$'.format(score, epoch))
-            plog.info(f'save to {save_path}')
+            self.config.env.plog.info('$$$$$$$$$$$$$ Good score {} at training step {} $$$$$$$$$'.format(score, epoch))
+            self.config.env.plog.info(f'save to {save_path}')
             update_dict = {'score': score.item(),
                            'epoch': epoch,
                            'timestamp': start_timestamp,
