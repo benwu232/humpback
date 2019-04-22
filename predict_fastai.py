@@ -81,7 +81,7 @@ def run(config):
     for ri in range(len(preds_known)):
         if preds_unknown[ri]:
             tops[ri, 1:] = tops[ri, :-1]
-            tops[ri, 0] = 5004
+            tops[ri, 0] = new_whale_idx
 
     tops = tops.cpu().numpy()
     test_df = pd.read_csv(pdir.data/'sample_submission.csv')

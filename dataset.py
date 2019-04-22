@@ -6,6 +6,7 @@ from albumentations.imgaug import *
 from PIL import Image
 import imgaug as ia
 from imgaug import augmenters as iaa
+from utils import *
 
 def prepare_df(config):
     df = pd.read_csv(config.env.pdir.data/'train.csv')
@@ -14,6 +15,9 @@ def prepare_df(config):
     df = filter_df(df, n_new_whale=config.train.new_whale, new_whale_id=new_whale_id)
     df = df.drop('index', 1)
     df_fname = df.set_index('Image')
+    df_counted = df.groupby('Id').count()
+    label_weight = len(df) / np.array(df_counted.Image.tolist())
+    label_weight = torch.tensor(label_weight[:-1]).to(device)
     val_idxes = split_data_set(df, seed=1)
     #val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
     #val_idxes = split_whale_idx(df, new_whale_method=0, seed=97)
@@ -27,7 +31,7 @@ def prepare_df(config):
     label2idx = {}
     for k, label in enumerate(labels):
         label2idx[label] = k
-    return df, trn_idxes, val_idxes, labels, label2idx
+    return df, trn_idxes, val_idxes, labels, label2idx, label_weight[:-1]
 
 def adjust_edge(bmin, bmax, max_value, adjust_rate=0.05):
     bbox_adjust = int((bmax - bmin) * adjust_rate / 2)
@@ -49,13 +53,42 @@ class WhaleDataSet(Dataset):
                  **_):
         self.bboxes = pd.read_csv(config.env.bbox_path)
         self.bboxes = self.bboxes.set_index('Image')
-        self.df, self.trn_idxes, self.val_idxes, self.labels, self.label2idx = prepare_df(config)
+        self.df, self.trn_idxes, self.val_idxes, self.labels, self.label2idx, self.label_weight = prepare_df(config)
         self.mode = mode
+        self.use_flip = config.train.use_flip
         #self.c = len(self.df.Id.unique())
         self.c = len(self.labels)
         self.classes = self.labels
+        if self.use_flip and self.mode == 'train':
+            self.c = len(self.labels) * 2 - 1
+            self.classes = self.labels[:-1] + self.labels[:-1] + [self.labels[-1]]
+            for k in range(len(self.labels)-1, self.c-1):
+                self.classes[k] = f'flip_{self.classes[k]}'
+            self.label2idx['new_whale'] *= 2
+            self.new_whale_idx = self.label2idx['new_whale']
+        #for k, label in enumerate(self.classes):
+        #    self.label2idx[label] = k
 
         train_seq = iaa.Sequential([
+            iaa.Sometimes(0.5, iaa.AverageBlur(k=(3,3))),
+            iaa.Sometimes(0.5, iaa.MotionBlur(k=(3,5))),
+            #iaa.Sometimes(0.5, iaa.GaussianBlur(sigma=(0.0, 3.0))),
+            #iaa.AddToHueAndSaturation((-20, 20)),
+            iaa.Add((-10, 10), per_channel=0.5),
+            iaa.Multiply((0.9, 1.1), per_channel=0.5),
+            #iaa.Dropout(p=(0, 0.2)),
+            #iaa.CoarseDropout(0.02, size_percent=0.5),
+            iaa.AdditiveGaussianNoise(scale=(0, 0.03*255)),
+            iaa.Sometimes(0.7, iaa.Affine(
+                scale={'x': (0.9,1.1), 'y': (0.9,1.1)},
+                translate_percent={'x': (-0.05,0.05), 'y': (-0.05,0.05)},
+                shear=(-10,10),
+                rotate=(-10,10)
+                )),
+            iaa.Sometimes(0.5, iaa.Grayscale(alpha=(0.8,1.0))),
+            ], random_order=True)
+
+        train_seq1 = iaa.Sequential([
             iaa.Sometimes(0.5, iaa.AverageBlur(k=(3,3))),
             iaa.Sometimes(0.5, iaa.MotionBlur(k=(3,5))),
             #iaa.Sometimes(0.5, iaa.GaussianBlur(sigma=(0.0, 3.0))),
@@ -75,6 +108,7 @@ class WhaleDataSet(Dataset):
             ], random_order=True)
 
         if mode == 'train':
+            #self.idxes = self.trn_idxes[:100]
             self.idxes = self.trn_idxes
             self.data_path=Path(config.env.pdir.data/'train')
             #self.x = []
@@ -91,15 +125,24 @@ class WhaleDataSet(Dataset):
             self.idxes = list(range(len(self.test_list)))
             self.data_path=Path(config.env.pdir.data/'test')
         self.len = len(self.idxes)
-
+        self.categories = len(self.labels) - 1
 
     def __len__(self):
-        return len(self.idxes)
+        if self.use_flip and self.mode == 'train':
+            return self.len * 2
+        else:
+            return self.len
 
-    def get_label(self, index):
-        return self.label2idx[self.df.loc[index, 'Id']]
+    def get_label(self, index, flip=False):
+        label_idx = self.label2idx[self.df.loc[index, 'Id']]
+        if flip and label_idx < self.categories:
+            label_idx += self.categories
+        return label_idx
 
     def __getitem__(self, index):
+        flip = False
+        if index >= self.len:
+            flip = True
         index %= self.len
         index = self.idxes[index]
         if self.mode == 'test':
@@ -125,7 +168,7 @@ class WhaleDataSet(Dataset):
 
         label_idx = 0
         if self.mode != 'test':
-            label_idx = self.get_label(index)
+            label_idx = self.get_label(index, flip)
 
         #transform
         '''
@@ -151,6 +194,8 @@ class WhaleDataSet(Dataset):
         #show_image_pil(trans.transpose(2, 0, 1))
         #show_image(image)
         #show_image(trans)
+        if flip:
+            trans = np.fliplr(trans).copy()
 
         #data = self.transform(image=image, bboxes=bbox)
         return [trans.transpose(2, 0, 1), label_idx]

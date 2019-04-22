@@ -15,14 +15,27 @@ import pretrainedmodels
 from collections import OrderedDict
 import math
 import argparse
+from functools import partial
 import torchvision
 import pprint
 from utils import *
 from models import *
 from dataset import *
+from utils import acc_with_unknown, mapk_with_unknown
 
 
 def run(config):
+    global device
+    if 'device' in config:
+        device = torch.device(config.device)
+
+    new_whale_idx = 5004
+    if config.train.use_flip:
+        new_whale_idx = 10008
+
+    acc_all = partial(acc_with_unknown, new_whale_idx=new_whale_idx)
+    mapk_all = partial(mapk_with_unknown, new_whale_idx=new_whale_idx)
+
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
     config.env.update(init_env(config))
@@ -158,7 +171,7 @@ def run(config):
 
     '''
     backbone = get_backbone(config)
-    loss_fn = get_loss_fn(config)
+    loss_fn = get_loss_fn(config, new_whale_idx=new_whale_idx)#, label_weight=data_bunch.train_ds.label_weight)
 
     method = config.train.method
     if method in [1, 2]:
@@ -178,7 +191,8 @@ def run(config):
                           init=None,
                           true_wd=true_wd,
                           path=config.env.pdir.root,
-                          metrics=[acc_with_unknown, mapk_with_unknown]
+                          metrics=[acc_all, mapk_all]
+                          #metrics=[acc_with_unknown, mapk_with_unknown]
                           #metrics=[accuracy, map5, mapkfast])
                           )
     if config.train.new_whale != 0:
@@ -217,7 +231,7 @@ def run(config):
         #coarse stage
         if model_file == '':
             #learner.load(f'{name}-coarse')
-            learner.fit_one_cycle(9, 1e-3)#, callbacks=cbs)
+            learner.fit_one_cycle(7, 1e-3)#, callbacks=cbs)
             fname = f'{name}-coarse'
             print(f'saving to {fname}')
             learner.save(fname)

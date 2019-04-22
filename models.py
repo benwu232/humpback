@@ -25,6 +25,8 @@ def get_backbone(config):
         backbone = models.resnet34
     elif arch == 'resnet50':
         backbone = models.resnet50
+    elif arch == 'resnet101':
+        backbone = models.resnet101
     elif arch == 'densenet121':
         backbone = models.densenet121
     return backbone
@@ -34,7 +36,7 @@ def get_body(config):
     body = create_body(backbone)
     return body
 
-def get_loss_fn(config):
+def get_loss_fn(config, **kwargs):
     loss = config.loss.name
     if loss == 'cross_entropy':
         loss_fn = nn.CrossEntropyLoss()
@@ -52,7 +54,7 @@ def get_loss_fn(config):
         radius = config.loss.radius
         margin = config.loss.margin
         l2_factor = config.loss.l2_factor
-        loss_fn = MixLoss(radius=radius, margin=margin, l2_factor=l2_factor)
+        loss_fn = MixLoss(radius=radius, margin=margin, l2_factor=l2_factor, new_whale_idx=kwargs['new_whale_idx'])
     return loss_fn
 
 class ArcModule1(nn.Module):
@@ -171,7 +173,10 @@ class MixHead(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.in_features = config.model.n_emb
-        self.out_features = config.model.n_class
+        self.n_class = config.model.n_class
+        self.out_features = self.n_class - 1
+        if config.train.use_flip:
+            self.out_features = (self.n_class - 1) * 2
 
         self.head = nn.Sequential(#AdaptiveConcatPool2d(),
                                   #Flatten(),
@@ -179,6 +184,7 @@ class MixHead(nn.Module):
                                   nn.Dropout(config.model.drop_rate),
                                   Flatten(),
                                   nn.Linear(self.in_features*49, self.in_features),
+                                  #nn.Linear(self.in_features*100, self.in_features),
                                   #nn.PReLU(),
                                   nn.BatchNorm1d(self.in_features),
                                   #nn.Dropout(config.model.drop_rate),
@@ -187,8 +193,8 @@ class MixHead(nn.Module):
                                   )
 
         #self.bn1 = nn.BatchNorm1d(self.in_features)
-        self.sphere_multi = CosSimCenters(self.in_features, self.out_features - 1)
-        self.sphere_binary = nn.Linear(self.out_features - 1, 1)
+        self.sphere_multi = CosSimCenters(self.in_features, self.out_features)
+        self.sphere_binary = nn.Linear(self.out_features, 1)
         nn.init.xavier_normal_(self.sphere_binary.weight)
 
         for m in self.head.children():
@@ -199,15 +205,20 @@ class MixHead(nn.Module):
         self.binary_classifier = nn.Linear(self.in_features, self.out_features)
         nn.init.xavier_normal_(self.binary_classifier.weight)
 
+        self.unknown_classifier = nn.Linear(self.in_features, 1)
+        nn.init.xavier_normal_(self.unknown_classifier.weight)
+
     def cal_features(self, x):
         return self.forward(x)
 
     def forward(self, x):
         ho = self.head(x)
         cos_th = self.sphere_multi(ho)
-        bin_logits = self.sphere_binary(cos_th)
+        #bin_logits = self.sphere_binary(cos_th)
+        #bin_logits = self.binary_classifier(ho)
+        bin_logits = self.unknown_classifier(ho)
         #return torch.cat([cos_th, bin_logits], dim=1)
-        return [cos_th, bin_logits]
+        return [cos_th, bin_logits, self.sphere_multi.centers]
 
 def predict_mixhead(model, dl):
     model.eval()
@@ -382,6 +393,58 @@ class CosFaceLoss(nn.CrossEntropyLoss):
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
 
 
+class BinArcFaceLoss(nn.Module):
+    def __init__(self, weight=None, size_average=None, ignore_index=-100,
+                 reduce=None, reduction='mean', radius=60, margin=0.5):
+        super().__init__()
+        self.radius = radius
+        self.margin = margin
+        self.cos_m = math.cos(margin)
+        self.sin_m = math.sin(margin)
+        self.threshold = math.cos(math.pi - margin)
+        self.mm = math.sin(math.pi - margin) * margin
+
+    def forward(self, input, target):
+        cos_th = input
+        if not isinstance(input, torch.Tensor):
+            cos_th = input[0]
+        sin_th = torch.sqrt(1.0 - torch.pow(cos_th, 2))
+        cos_th_m = cos_th * self.cos_m - sin_th * self.sin_m        #cos(theta + margin)
+        cos_th_m = torch.where(cos_th > self.threshold, cos_th_m, cos_th - self.mm)
+
+        cond_v = cos_th - self.threshold
+        cond = cond_v <= 0
+        cos_th_m[cond] = (cos_th - self.mm)[cond]
+
+        target_onehot = onehot_enc(target, n_class=cos_th.shape[-1]+1)[:, :-1]
+        logits = target_onehot * cos_th_m + (1.0 - target_onehot) * cos_th
+        logits = logits * self.radius     #rescale
+        #loss_bin = F.binary_cross_entropy_with_logits(logits, target_onehot.float())#, reduction='none')
+        loss_bin = bin_focal_loss(logits, target_onehot, gamma=2.0)
+        return loss_bin
+
+
+class BinCosFaceLoss(nn.Module):
+    def __init__(self, weight=None, size_average=None, ignore_index=-100,
+                 reduce=None, reduction='mean', radius=60, margin=0.4):
+        super().__init__()
+        self.radius = radius
+        self.margin = margin
+
+    #@weak_script_method
+    def forward(self, input, target):
+        cos_th = input
+        if not isinstance(input, torch.Tensor):
+            cos_th = input[1]
+        target_onehot = onehot_enc(target, n_class=cos_th.shape[-1]+1)[:, :-1]
+        logits = self.radius * (cos_th * (1 - target_onehot) + (cos_th - self.margin) * target_onehot)
+        #bin = (torch.sigmoid(logits) > 0.5).long().sum(dim=-1)
+        #loss_bin = F.binary_cross_entropy_with_logits(logits, target_onehot.float())#, reduction='none')
+        loss_bin = bin_focal_loss(logits, target_onehot)
+        return loss_bin
+        #return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
+
+
 def focal_loss(logits, targets, weights=1.0, use_focal=True, gamma=2.0):
     ce = F.cross_entropy(logits, targets.long(), reduction='none')
     softmax = F.softmax(logits, dim=-1)
@@ -439,11 +502,13 @@ def bce1(input, target, n_hard=None):
 
 
 class MixLoss(nn.Module):
-    def __init__(self, radius=60, margin=0.4, model=None, l2_factor=1e-3, unknow_class=5004):
+    def __init__(self, radius=60, margin=0.4, model=None, l2_factor=1e-3, new_whale_idx=5004):
         super().__init__()
         #self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
         self.cos_loss = ArcFaceLoss(radius=radius, margin=margin)#, reduction='none')
-        self.unknown = unknow_class
+        #self.bin_loss = BinCosFaceLoss(radius=radius, margin=margin)
+        self.bin_cos_loss = BinArcFaceLoss(radius=radius, margin=margin)
+        self.new_whale_idx = new_whale_idx
         self.cnt = -1
         self.avg_loss_known = 20.0
         self.n_hard = 200
@@ -461,19 +526,33 @@ class MixLoss(nn.Module):
         #map5 = mapk_with_unknown(logits, target)
 
         cos_logits = logits[0]
+        #new_whale_logits = logits[1].view_as(target)
+        #new_whale_loss = F.binary_cross_entropy_with_logits(new_whale_logits, (target != self.new_whale_idx).float())
+        #new_whale_loss *= 30
+
+        #centers = F.normalize(logits[2][:5004, :])
+        centers = F.normalize(logits[2])
+        center_cos_sim = torch.mm(centers, centers.transpose(1, 0))
+        center_loss = -center_cos_sim.mean()
+        #center_loss *= 10
+
         bin_logits = logits[1].view_as(target)
+        bin_loss = F.binary_cross_entropy_with_logits(bin_logits, (target==self.new_whale_idx).float())#, pos_weight=torch.tensor([1, 1.6]))
+        #bin_loss = bin_focal_loss(logits, (target==self.new_whale_idx).float(), gamma=2.0)
+        bin_loss *= 10
 
         #for known, cos_loss
-        logits_known = cos_logits[target!=self.unknown]
-        target_known = target[target!=self.unknown]
+        logits_known = cos_logits[target != self.new_whale_idx]
+        target_known = target[target != self.new_whale_idx]
         loss_known = self.avg_loss_known
         if len(target_known):
             loss_known = self.cos_loss(logits_known, target_known)
             self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
 
-        #loss_bin = F.binary_cross_entropy_with_logits(bin_logits, (target==self.unknown).float())
-        #loss_bin *= 10
-        loss_bin = 0.0
+        #target_onehot = onehot_enc(target, n_class=bin_logits.shape[-1]+1)[:, :-1]
+        #loss_bin = F.binary_cross_entropy_with_logits(bin_logits, target_onehot.float())
+        #loss_bin_cos = self.bin_cos_loss(cos_logits, target)
+        #loss_bin_cos *= 10000
 
         #l2 regularization
         reg_loss = torch.tensor(0, dtype=torch.float32).to(device)
@@ -483,11 +562,12 @@ class MixLoss(nn.Module):
             reg_loss *= self.l2_factor
 
         #loss = loss_known + loss_bin + reg_loss
-        loss = loss_known + loss_bin + reg_loss
+        #loss = loss_known + loss_bin_cos + new_whale_loss + reg_loss
+        loss = loss_known + bin_loss + reg_loss + center_loss
 
         self.cnt += 1
         if self.cnt % 1000 == 0:
-            print(f'loss_bin={loss_bin}, loss_known={loss_known}, reg_loss={reg_loss} \n')
+            print(f'loss_known={loss_known}, bin_loss={bin_loss}, reg_loss={reg_loss}, center_loss={center_loss} \n')
 
         return loss
 
@@ -499,8 +579,8 @@ class MixLoss(nn.Module):
         bin_logits = logits[1]
 
         #for known, cos_loss
-        logits_known = cos_logits[target!=self.unknown]
-        target_known = target[target!=self.unknown]
+        logits_known = cos_logits[target != self.new_whale_idx]
+        target_known = target[target != self.new_whale_idx]
         loss_known = self.avg_loss_known
         if len(target_known):
             loss_known = self.cos_loss(logits_known, target_known)
@@ -517,7 +597,7 @@ class MixLoss(nn.Module):
         bce_loss *= 10
 
         #penalize the new_whale examples which are too high
-        logits_unknown = cos_logits[target==self.unknown]
+        logits_unknown = cos_logits[target == self.new_whale_idx]
         n_loss = 0.0
         if len(logits_unknown):
             softmax_unknown = F.softmax(logits_unknown, -1)

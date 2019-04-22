@@ -23,6 +23,7 @@ from common import *
 #BOXES = '../input/bounding_boxes.csv'
 #MODELS = './models'
 SZ = 224
+#SZ = 320
 BS = 32
 #NUM_WORKERS = 0
 
@@ -30,6 +31,7 @@ USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 
 new_whale_id = 'z_new_whale'
+
 digit_len = 15
 
 train_list_dbg = ['00050a15a.jpg', '0005c1ef8.jpg', '0006e997e.jpg', '833675975.jpg', '2fe2cc5c0.jpg', '2f31725c6.jpg',
@@ -268,7 +270,7 @@ def apk(actual, predicted, k=10):
 
     return score / min(len(actual), k)
 
-def acc_with_unknown(preds, targs):
+def acc_with_unknown1(preds, targs):
     targs = targs.to(device)
     softmax = preds[0].max(1)[1].view_as(targs)
     bin = (torch.sigmoid(preds[1]) > 0.5).long() * 5004
@@ -276,6 +278,17 @@ def acc_with_unknown(preds, targs):
     value = softmax
     if bin.sum() > 0:
         value = torch.where(bin!=0, bin, softmax)
+    acc = (value == targs).sum().float() / len(targs)
+    return acc
+
+def acc_with_unknown(preds, targs, new_whale_idx=5004):
+    new_whale = torch.tensor(new_whale_idx).to(device)
+    targs = targs.to(device)
+    softmax = preds[0].max(1)[1].view_as(targs)
+    #bin = (torch.sigmoid(preds[0]) > 0.5).long().sum(dim=-1)
+    bin = (torch.sigmoid(preds[1]) > 0.5).long()
+    bin = bin.view_as(targs)
+    value = torch.where(bin==0, new_whale, softmax)
     acc = (value == targs).sum().float() / len(targs)
     return acc
 
@@ -298,7 +311,24 @@ def mapkfast(preds, targs, k=5):
         scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
-def mapk_with_unknown(preds, targs, k=5):
+def mapk_with_unknown(preds, targs, k=5, new_whale_idx=5004):
+    new_whale = torch.tensor(new_whale_idx).to(device)
+    #print(preds.shape, targs.shape)
+    top5 = preds[0].topk(k, 1)[1]
+    #bin = (torch.sigmoid(bin_logits) > 0.5).long().sum(dim=-1)
+    bin = (torch.sigmoid(preds[1]) > 0.5).long()
+    bin = bin.view(-1)
+    for row in range(len(targs)):
+        if bin[row] == 0:
+            top5[row, 1:] = top5[row, :-1]
+            top5[row, 0] = new_whale
+    targs = targs.to(preds[0].device)
+    scores = torch.zeros(len(preds[0]), k).float().to(preds[0].device)
+    for kk in range(k):
+        scores[:,kk] = (top5[:,kk] == targs).float() / float(kk+1)
+    return scores.max(dim=1)[0].mean()
+
+def mapk_with_unknown1(preds, targs, k=5):
     bin_logits= preds[1]
     preds = preds[0]
     #print(preds.shape, targs.shape)
