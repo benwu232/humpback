@@ -131,6 +131,7 @@ def split_data_set(df, seed=97):
     random.shuffle(val_idxes)
     val_idxes = val_idxes[:n_known_whale]
     val_idxes.extend(new_whale_idxes)
+    random.shuffle(val_idxes)
     return val_idxes
 
 def split_whale_idx(df, nth_fold=0, total_folds=5, new_whale_method=0, seed=1, new_whale_id='z_new_whale'):
@@ -270,25 +271,27 @@ def apk(actual, predicted, k=10):
 
     return score / min(len(actual), k)
 
-def acc_with_unknown1(preds, targs):
-    targs = targs.to(device)
-    softmax = preds[0].max(1)[1].view_as(targs)
-    bin = (torch.sigmoid(preds[1]) > 0.5).long() * 5004
-    bin = bin.view_as(targs)
-    value = softmax
-    if bin.sum() > 0:
-        value = torch.where(bin!=0, bin, softmax)
-    acc = (value == targs).sum().float() / len(targs)
+def acc_known(preds, targs, new_whale_idx=5004):
+    #new_whale = torch.tensor(new_whale_idx).to(device)
+    known_idxes = targs != new_whale_idx
+    if len(known_idxes) == 0:
+        return 0.0
+    targs = targs[known_idxes].to(device)
+    #print(len(preds[0][known_idxes]), len(known_idxes))
+    softmax = preds[0][known_idxes].max(1)[1].view_as(targs)
+    acc = (softmax == targs).sum().float() / len(targs)
     return acc
 
-def acc_with_unknown(preds, targs, new_whale_idx=5004):
+def acc_all(preds, targs, new_whale_idx=5004, with_new_whale=True):
     new_whale = torch.tensor(new_whale_idx).to(device)
     targs = targs.to(device)
     softmax = preds[0].max(1)[1].view_as(targs)
-    #bin = (torch.sigmoid(preds[0]) > 0.5).long().sum(dim=-1)
-    bin = (torch.sigmoid(preds[1]) > 0.5).long()
-    bin = bin.view_as(targs)
-    value = torch.where(bin==0, new_whale, softmax)
+    value = softmax
+    if with_new_whale:
+        #bin = (torch.sigmoid(preds[0]) > 0.5).long().sum(dim=-1)
+        bin = (torch.sigmoid(preds[1]) > 0.5).long()
+        bin = bin.view_as(targs)
+        value = torch.where(bin==0, new_whale, softmax)
     acc = (value == targs).sum().float() / len(targs)
     return acc
 
@@ -311,40 +314,35 @@ def mapkfast(preds, targs, k=5):
         scores[:,kk] = (top_5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
-def mapk_with_unknown(preds, targs, k=5, new_whale_idx=5004):
+def mapk_known(preds, targs, k=5, new_whale_idx=5004):
+    new_whale = torch.tensor(new_whale_idx).to(device)
+    known_idxes = targs != new_whale_idx
+    #print(preds.shape, targs.shape)
+    top5 = preds[0][known_idxes].topk(k, 1)[1]
+    targs = targs[known_idxes].to(preds[0].device)
+    scores = torch.zeros(len(targs), k).float().to(preds[0].device)
+    for kk in range(k):
+        scores[:,kk] = (top5[:,kk] == targs).float() / float(kk+1)
+    return scores.max(dim=1)[0].mean()
+
+def mapk_all(preds, targs, k=5, new_whale_idx=5004, with_new_whale=True):
     new_whale = torch.tensor(new_whale_idx).to(device)
     #print(preds.shape, targs.shape)
     top5 = preds[0].topk(k, 1)[1]
-    #bin = (torch.sigmoid(bin_logits) > 0.5).long().sum(dim=-1)
-    bin = (torch.sigmoid(preds[1]) > 0.5).long()
-    bin = bin.view(-1)
-    for row in range(len(targs)):
-        if bin[row] == 0:
-            top5[row, 1:] = top5[row, :-1]
-            top5[row, 0] = new_whale
+    if with_new_whale:
+        #bin = (torch.sigmoid(bin_logits) > 0.5).long().sum(dim=-1)
+        bin = (torch.sigmoid(preds[1]) > 0.5).long()
+        bin = bin.view(-1)
+        for row in range(len(targs)):
+            if bin[row] == 0:
+                top5[row, 1:] = top5[row, :-1]
+                top5[row, 0] = new_whale
     targs = targs.to(preds[0].device)
     scores = torch.zeros(len(preds[0]), k).float().to(preds[0].device)
     for kk in range(k):
         scores[:,kk] = (top5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
-def mapk_with_unknown1(preds, targs, k=5):
-    bin_logits= preds[1]
-    preds = preds[0]
-    #print(preds.shape, targs.shape)
-    top5 = preds.topk(k, 1)[1]
-    bin = (torch.sigmoid(bin_logits) > 0.5).long() * 5004
-    bin = bin.view_as(targs)
-    if bin.sum() > 0:
-        for row in range(len(targs)):
-            if bin[row]:
-                top5[row, 1:] = top5[row, :-1]
-                top5[row, 0] = bin[row]
-    targs = targs.to(preds.device)
-    scores = torch.zeros(len(preds), k).float().to(preds.device)
-    for kk in range(k):
-        scores[:,kk] = (top5[:,kk] == targs).float() / float(kk+1)
-    return scores.max(dim=1)[0].mean()
 
 '''
 def accuracy_with_unknown(preds, targs, k=5, unknown_idx=5004):

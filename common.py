@@ -241,3 +241,10 @@ def init_env(config):
             env.plog = init_logger(log_file=plog_file)
 
     return env
+
+
+def freeze_model(model, mode=True):
+    req_grad = not mode
+    for parms in model.parameters():
+        parms.requires_grad = req_grad
+

@@ -51,10 +51,12 @@ def get_loss_fn(config, **kwargs):
         margin = config.loss.margin
         loss_fn = CosFaceLoss(radius=radius, margin=margin)
     elif loss == 'MixLoss':
-        radius = config.loss.radius
-        margin = config.loss.margin
-        l2_factor = config.loss.l2_factor
-        loss_fn = MixLoss(radius=radius, margin=margin, l2_factor=l2_factor, new_whale_idx=kwargs['new_whale_idx'])
+        loss_fn = MixLoss(radius=config.loss.radius,
+                          margin=config.loss.margin,
+                          l2_factor=config.loss.l2_factor,
+                          bin_loss_factor=config.loss.bin_loss_factor,
+                          cos_loss_factor=config.loss.cos_loss_factor,
+                          new_whale_idx=kwargs['new_whale_idx'])
     return loss_fn
 
 class ArcModule1(nn.Module):
@@ -228,7 +230,7 @@ def predict_mixhead(model, dl):
         y_list = []
         for x, y in progress_bar(dl):
             x = torch.tensor(x).to(device)
-            [cos_logits, bin_logits] = model(x)
+            [cos_logits, bin_logits, _] = model(x)
             cos_o.append(cos_logits)
             bin_o.append(bin_logits)
             y_list.append(y)
@@ -456,6 +458,17 @@ def focal_loss(logits, targets, weights=1.0, use_focal=True, gamma=2.0):
     return focal_loss.mean()
 
 
+def focal_loss_bin(logits, targets, weights=1.0, use_focal=True, gamma=2.0):
+    ce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+    sigmoid = F.sigmoid(logits)
+    target_probs = torch.where(targets.long()==1, sigmoid, 1-sigmoid)
+    focal = 1.0
+    if use_focal:
+        focal = torch.pow(1 - target_probs, gamma)
+    focal_loss = focal * weights * ce.view(-1, 1)
+    return focal_loss.mean()
+
+
 def bin_focal_loss(logits, targets, weights=1.0, use_focal=True, gamma=2.0, reduction='mean'):
     ce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
     #ce = F.binary_cross_entropy(logits, targets, reduction='none')
@@ -502,7 +515,7 @@ def bce1(input, target, n_hard=None):
 
 
 class MixLoss(nn.Module):
-    def __init__(self, radius=60, margin=0.4, model=None, l2_factor=1e-3, new_whale_idx=5004):
+    def __init__(self, radius=60, margin=0.4, l2_factor=1e-3, cos_loss_factor=1.0, bin_loss_factor=1.0, new_whale_idx=5004):
         super().__init__()
         #self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
         self.cos_loss = ArcFaceLoss(radius=radius, margin=margin)#, reduction='none')
@@ -517,6 +530,9 @@ class MixLoss(nn.Module):
         self.margin = 0.6
         self.n_thresh = 0.01
         self.l2_factor = l2_factor
+        self.bin_loss_factor = bin_loss_factor
+        self.cos_loss_factor = cos_loss_factor
+
         #self.model = model
 
     def forward(self, logits, target):
@@ -530,24 +546,28 @@ class MixLoss(nn.Module):
         #new_whale_loss = F.binary_cross_entropy_with_logits(new_whale_logits, (target != self.new_whale_idx).float())
         #new_whale_loss *= 30
 
-        #centers = F.normalize(logits[2][:5004, :])
-        centers = F.normalize(logits[2])
-        center_cos_sim = torch.mm(centers, centers.transpose(1, 0))
-        center_loss = -center_cos_sim.mean()
+        #centers = F.normalize(logits[2])
+        #center_cos_sim = torch.mm(centers, centers.transpose(1, 0))
+        #center_loss = -center_cos_sim.mean()
         #center_loss *= 10
 
-        bin_logits = logits[1].view_as(target)
-        bin_loss = F.binary_cross_entropy_with_logits(bin_logits, (target==self.new_whale_idx).float())#, pos_weight=torch.tensor([1, 1.6]))
-        #bin_loss = bin_focal_loss(logits, (target==self.new_whale_idx).float(), gamma=2.0)
-        bin_loss *= 10
+        bin_loss = 0.0
+        if self.bin_loss_factor > 0:
+            bin_logits = logits[1].view_as(target)
+            pos_weight = torch.tensor([0.618] * len(target)).to(device)
+            bin_loss = F.binary_cross_entropy_with_logits(bin_logits, (target!=self.new_whale_idx).float(), pos_weight=pos_weight)
+            #bin_loss = focal_loss_bin(bin_logits, (target!=self.new_whale_idx).float(), gamma=2.0)
+            bin_loss *= self.bin_loss_factor
 
         #for known, cos_loss
-        logits_known = cos_logits[target != self.new_whale_idx]
-        target_known = target[target != self.new_whale_idx]
-        loss_known = self.avg_loss_known
-        if len(target_known):
-            loss_known = self.cos_loss(logits_known, target_known)
-            self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
+        loss_known = 0.0
+        if self.cos_loss_factor > 0:
+            logits_known = cos_logits[target != self.new_whale_idx]
+            target_known = target[target != self.new_whale_idx]
+            loss_known = self.avg_loss_known
+            if len(target_known):
+                loss_known = self.cos_loss(logits_known, target_known)
+                self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
 
         #target_onehot = onehot_enc(target, n_class=bin_logits.shape[-1]+1)[:, :-1]
         #loss_bin = F.binary_cross_entropy_with_logits(bin_logits, target_onehot.float())
@@ -555,19 +575,21 @@ class MixLoss(nn.Module):
         #loss_bin_cos *= 10000
 
         #l2 regularization
-        reg_loss = torch.tensor(0, dtype=torch.float32).to(device)
-        if self.model:
-            for param in self.model.parameters():
-                reg_loss += (param ** 2).sum()
-            reg_loss *= self.l2_factor
+        l2_loss = 0.0
+        if self.l2_factor > 0:
+            l2_loss = torch.tensor(0, dtype=torch.float32).to(device)
+            if self.model:
+                for param in self.model.parameters():
+                    l2_loss += (param ** 2).sum()
+                l2_loss *= self.l2_factor
 
-        #loss = loss_known + loss_bin + reg_loss
-        #loss = loss_known + loss_bin_cos + new_whale_loss + reg_loss
-        loss = loss_known + bin_loss + reg_loss + center_loss
+        #loss = loss_known + loss_bin + l2_loss
+        #loss = loss_known + loss_bin_cos + new_whale_loss + l2_loss
+        loss = loss_known + bin_loss + l2_loss# + center_loss
 
         self.cnt += 1
         if self.cnt % 1000 == 0:
-            print(f'loss_known={loss_known}, bin_loss={bin_loss}, reg_loss={reg_loss}, center_loss={center_loss} \n')
+            print(f'loss_known={loss_known}, bin_loss={bin_loss}, l2_loss={l2_loss}\n')#, center_loss={center_loss} \n')
 
         return loss
 
@@ -708,7 +730,7 @@ class CalMap5Callback(fastai.callbacks.tracker.TrackerCallback):
             targets = torch.cat(targets)
             #acc = accuracy_with_unknown([preds_known, preds_unknown], targets)
             #print(acc)
-            map_score = mapk_with_unknown([preds_known, preds_unknown], targets)
+            map_score = mapk_all([preds_known, preds_unknown], targets)
             print(f'map score: {map_score}\n')
 
 
@@ -730,6 +752,105 @@ class ResumeEpoch(fastai.callbacks.tracker.TrackerCallback):
 
 
 class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
+    "A `TrackerCallback` that saves the model when monitored quantity is best."
+    def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', config=None):
+        super().__init__(learn, monitor=monitor, mode=mode)
+        self.prefix = config.model.backbone
+        self.monitor = monitor
+        self.config = config
+        if isinstance(scoreboard, Scoreboard):
+            self.scoreboard = scoreboard
+        else:
+            if isinstance(scoreboard, Path):
+                self.scoreboard_file = scoreboard
+            elif isinstance(scoreboard, str):
+                if 'scoreboard' in scoreboard:
+                    self.scoreboard_file = Path(scoreboard)
+                else:
+                    self.scoreboard_file = pdir.models/f'scoreboard-{scoreboard}.pkl'
+            self.sb_len = config.scoreboard.len
+            self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
+        self.best_score = 0
+        self.mode = mode
+        self.operator = np.greater
+        if monitor == 'val_loss':
+            self.best_score = np.inf
+            self.mode = 'min'
+            self.operator = np.less
+        self.patience = config.train.patience
+        self.wait = 0
+
+        self.monitor = 'map5'
+        self.cal_score = None
+        if config.train.cal_score == 'mapk_known':
+            self.score_idx = 4
+            self.operator = np.greater
+            self.best_score = 0
+        elif config.train.cal_score == 'mapk_all':
+            self.score_idx = 2
+            self.operator = np.greater
+            self.best_score = 0
+
+
+    def jump_to_epoch(self, epoch:int)->None:
+        try:
+            self.learn.load(f'{self.name}_{epoch}', purge=False)
+            print(f"Loaded {self.name}_{epoch}")
+        except: print(f'Model {self.name}_{epoch} not found.')
+
+    #def on_batch_end(self, last_loss, epoch, num_batch, **kwargs: Any) -> None:
+    def on_epoch_end(self, epoch:int, **kwargs:Any)->None:
+        #cal score
+        #preds, y = predict_mixhead(self.learn.model, self.learn.data.valid_dl)
+        #score = self.cal_score(preds, y)
+        #print(f'score = {score}')
+
+        #compare and store to scoreboard
+        "Compare the value monitored to its best score and maybe save the model."
+        if self.monitor == 'val_loss':
+            score = self.get_monitor_value()
+        else:  #map score
+           score = self.learn.validate(self.learn.data.valid_dl)
+        print(f'score = {score}')
+        score = score[self.score_idx].item()
+        print(f'ref_score = {score}')
+
+        # early stopping
+        if score is None: return
+        #if score > self.best_score:
+        if self.operator(score, self.best_score):
+            self.best_score,self.wait = score,0
+        else:
+            self.wait += 1
+            print(f'wait={self.wait}, patience={self.patience}')
+            if self.wait > self.patience:
+                print(f'Epoch {epoch}: early stopping')
+                return {"stop_training":True}
+
+        #scoreboard
+        #if len(self.scoreboard) == 0 or score > self.scoreboard[-1][0]:
+        if not self.scoreboard.is_full() or self.operator(score, self.scoreboard[-1]['score']):
+            store_file = f'{self.prefix}-{epoch}'
+            save_path = self.learn.save(store_file, return_path=True)
+            self.config.env.plog.info('$$$$$$$$$$$$$ Good score {} at training step {} $$$$$$$$$'.format(score, epoch))
+            self.config.env.plog.info(f'save to {save_path}')
+            update_dict = {'score': score,
+                           'epoch': epoch,
+                           'timestamp': start_timestamp,
+                           'config': self.config,
+                           'file': save_path
+                           }
+            self.scoreboard.update(update_dict)
+
+    def on_train_end(self, **kwargs):
+        "Load the best model."
+        #print('tmp saving model to linshi')
+        #self.learn.save(f'linshi')
+        if len(self.scoreboard):
+            self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
+
+
+class ScoreboardCallback1(fastai.callbacks.tracker.TrackerCallback):
     "A `TrackerCallback` that saves the model when monitored quantity is best."
     def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', config=None):
         super().__init__(learn, monitor=monitor, mode=mode)

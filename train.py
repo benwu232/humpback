@@ -21,7 +21,7 @@ import pprint
 from utils import *
 from models import *
 from dataset import *
-from utils import acc_with_unknown, mapk_with_unknown
+from utils import *
 
 
 def run(config):
@@ -33,8 +33,8 @@ def run(config):
     if config.train.use_flip:
         new_whale_idx = 10008
 
-    acc_all = partial(acc_with_unknown, new_whale_idx=new_whale_idx)
-    mapk_all = partial(mapk_with_unknown, new_whale_idx=new_whale_idx)
+    acc_unknown = partial(acc_all, new_whale_idx=new_whale_idx)
+    mapk_unknown = partial(mapk_all, new_whale_idx=new_whale_idx)
 
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
@@ -174,10 +174,10 @@ def run(config):
     loss_fn = get_loss_fn(config, new_whale_idx=new_whale_idx)#, label_weight=data_bunch.train_ds.label_weight)
 
     method = config.train.method
-    if method in [1, 2]:
-        true_wd = True
-    else:
-        true_wd = False
+    #if method in [1, 2]:
+    #    true_wd = True
+    #else:
+    #    true_wd = False
 
     if config.model.head == 'MixHead':
         head = MixHead
@@ -189,10 +189,10 @@ def run(config):
                           loss_func=loss_fn,
                           custom_head=head(config),
                           init=None,
-                          true_wd=true_wd,
+                          true_wd=config.train.true_wd,
+                          wd=config.train.wd,
                           path=config.env.pdir.root,
-                          metrics=[acc_all, mapk_all]
-                          #metrics=[acc_with_unknown, mapk_with_unknown]
+                          metrics=[acc_unknown, mapk_unknown, acc_known, mapk_known]
                           #metrics=[accuracy, map5, mapkfast])
                           )
     if config.train.new_whale != 0:
@@ -215,7 +215,9 @@ def run(config):
 
     model_file = ''
     if config.model.pretrain:
-        if len(scoreboard) and scoreboard[0]['file'].is_file():
+        if 'pretrained_file' in config.train:
+            model_file = config.train.pretrained_file
+        elif len(scoreboard) and scoreboard[0]['file'].is_file():
             model_file = scoreboard[0]['file'].name[:-4]
         elif (config.env.pdir.models/f'{name}-coarse.pth').is_file():
             model_file = f'{name}-coarse'
@@ -243,10 +245,10 @@ def run(config):
 
         # Fine tuning
         #learner.to_fp16()
-        learner.clip_grad()
+        learner.clip_grad(0.5)
         learner.unfreeze()
 
-        max_lr = 1e-3
+        max_lr = config.train.max_lr
         lrs = [max_lr/100, max_lr/10, max_lr]
 
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
@@ -259,14 +261,55 @@ def run(config):
         learner.fit_one_cycle(config.train.n_epoch, lrs, callbacks=cbs)
 
     elif method == 3:
-        learner.fit_one_cycle(9, 1e-3, callbacks=cbs)
+        #learner.fit_one_cycle(7, 1e-3, callbacks=cbs)
+        #learner.clip_grad()
+        #learner.unfreeze()
+        #max_lr = 1e-4
+        #lrs = [max_lr/100, max_lr/10, max_lr]
+        #learner.fit(config.train.n_epoch, lrs, callbacks=cbs)
+
+        #coarse stage
+        if model_file == '':
+            #learner.load(f'{name}-coarse')
+            learner.fit_one_cycle(7, 1e-3)#, callbacks=cbs)
+            fname = f'{name}-coarse'
+            print(f'saving to {fname}')
+            learner.save(fname)
+
+            print('LR finding ...')
+            learner.lr_find()
+            learner.recorder.plot()
+            plt.savefig('lr_find.png')
+
+        # Fine tuning
+        #learner.to_fp16()
         learner.clip_grad()
         learner.unfreeze()
-        max_lr = 1e-4
+
+        max_lr = 1e-3
         lrs = [max_lr/100, max_lr/10, max_lr]
+
         learner.fit(config.train.n_epoch, lrs, callbacks=cbs)
 
+    #for all whale data
+    elif method == 10:
+        #freeze all
+        #learner.freeze_to(len(learner.layer_groups))
+        freeze_model(learner.model, True)
 
+        #unfreeze last
+        #requires_grad(learner.model[1].unknown_classifier, True)
+        requires_grad(learner.model[1].unknown_classifier, True)
+
+        if config.train.find_lr:
+            print('LR finding ...')
+            learner.lr_find()
+            learner.recorder.plot()
+            plt.savefig('lr_find.png')
+
+        #train
+        learner.clip_grad()
+        learner.fit(config.train.n_epoch, config.train.max_lr, callbacks=cbs)
 
 
 def parse_args():
