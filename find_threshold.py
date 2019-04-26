@@ -25,9 +25,9 @@ from utils import *
 
 
 def run(config):
-    #global device
-    #if 'device' in config:
-    #    device = torch.device(config.device)
+    global device
+    if 'device' in config:
+        device = torch.device(config.device)
 
     new_whale_idx = 5004
     if config.train.use_flip:
@@ -138,7 +138,6 @@ def run(config):
         elif (config.env.pdir.models/f'{name}-coarse.pth').is_file():
             model_file = f'{name}-coarse'
 
-        #model_file = 'CosNet-known-densenet121-4'
         #model_file = 'CosNet-densenet121-MixLoss-coarse'
         #model_file = 'densenet121-82'
         if model_file:
@@ -149,32 +148,18 @@ def run(config):
 
     #learner.export(f'{config.task.name}-{config.model.backbone}.pkl')
 
-    print('predicting...')
-    preds, y = predict_mixhead(learner.model, learner.data.test_dl)
+    preds, y = predict_mixhead(learner.model, learner.data.valid_dl)
 
-    new_whale = 5004
-    threshold = 0.335
-    threshold = -1
+    max_map5 = 0.0
+    best_thresh = 0.0
+    for threshold in np.arange(0.2, 0.50, 0.001):
+        map5 = cal_map5_thresh(preds, y, threshold)
+        print(f'threshold: {threshold}, score: {map5}')
+        if map5 > max_map5:
+            max_map5 = map5
+            best_thresh = threshold
 
-    top5_idxes = insert_new_whale(preds, threshold, new_whale)
-
-    df_sub = pd.read_csv(config.env.pdir.data/'sample_submission.csv')
-    df_sub = df_sub.set_index('Image')
-
-    top5_idxes = top5_idxes.detach().cpu().numpy()
-
-    for k, f in enumerate(learner.data.test_ds.test_list):
-        #f = learner.data.test_ds.test_list[0]
-        row = learner.data.test_ds.labels[top5_idxes[k, 0]]
-        for col in range(1, 5):
-            row += f' {learner.data.test_ds.labels[top5_idxes[k, col]]}'
-        df_sub.at[f.name, 'Id'] = row
-
-    sub_file = config.env.pdir.root/'submission'/f'{config.task.name}-{config.model.backbone}.csv'
-    print(f'submission file: {sub_file}')
-    df_sub.to_csv(sub_file)
-
-
+    print(f'best_score: {max_map5}, best_thresh: {best_thresh}')
 
 
 def parse_args():

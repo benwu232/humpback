@@ -131,7 +131,7 @@ def run(config):
                           init=None,
                           true_wd=true_wd,
                           path=pdir.root,
-                          metrics=[acc_all, mapk_all]
+                          metrics=[cal_acc, cal_mapk]
                           #metrics=[accuracy, map5, mapkfast])
                           )
     if config.train.new_whale != 0:

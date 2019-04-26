@@ -33,8 +33,10 @@ def run(config):
     if config.train.use_flip:
         new_whale_idx = 10008
 
-    acc_unknown = partial(acc_all, new_whale_idx=new_whale_idx)
-    mapk_unknown = partial(mapk_all, new_whale_idx=new_whale_idx)
+    acc_unknown = partial(cal_acc, new_whale_idx=new_whale_idx)
+    mapk_unknown = partial(cal_mapk, new_whale_idx=new_whale_idx)
+    #acc_known = partial(cal_acc, new_whale_idx=new_whale_idx, with_new_whale=False)
+    #mapk_known = partial(cal_mapk, new_whale_idx=new_whale_idx, with_new_whale=False)
 
     name = f'{config.task.name}-{config.model.backbone}-{config.loss.name}'
 
@@ -205,10 +207,10 @@ def run(config):
     cb_early_stop = EarlyStoppingCallback(learner, min_delta=1e-4, patience=30)
     cb_cal_map5 = CalMap5Callback(learner)
     cb_scoreboard = ScoreboardCallback(learner,
-                                       monitor='val_loss',
+                                       monitor='val_map',
                                        scoreboard=scoreboard,
                                        config=config,
-                                       mode=config.scoreboard.mode)
+                                       )
     #cbs = [cb_cal_map5, cb_scoreboard, cb_early_stop]
     #cbs = [cb_scoreboard, cb_early_stop]
     cbs = [cb_scoreboard]#, cb_cal_map5]
@@ -238,6 +240,7 @@ def run(config):
             print(f'saving to {fname}')
             learner.save(fname)
 
+        if config.train.find_lr:
             print('LR finding ...')
             learner.lr_find()
             learner.recorder.plot()
@@ -299,7 +302,7 @@ def run(config):
 
         #unfreeze last
         #requires_grad(learner.model[1].unknown_classifier, True)
-        requires_grad(learner.model[1].unknown_classifier, True)
+        requires_grad(learner.model[1].sphere_binary, True)
 
         if config.train.find_lr:
             print('LR finding ...')
@@ -307,9 +310,15 @@ def run(config):
             learner.recorder.plot()
             plt.savefig('lr_find.png')
 
-        #train
+        #train binary classifier only
         learner.clip_grad()
-        learner.fit(config.train.n_epoch, config.train.max_lr, callbacks=cbs)
+        config.task.name = f'{config.task.name}-ft1'
+        learner.fit_one_cycle(100, config.train.max_lr, callbacks=cbs)
+
+        #train binary and multi classifiers
+        #requires_grad(learner.model[1], True)
+        #config.task.name = f'{config.task.name[:-1]}2'
+        #learner.fit_one_cycle(100, config.train.max_lr/10, callbacks=cbs)
 
 
 def parse_args():

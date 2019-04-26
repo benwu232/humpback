@@ -25,12 +25,14 @@ model:
   margin: 0.5
   n_class: 5005
   drop_rate: 0.5
+  drop_rate2: 0.3
   pretrain: 1
 
 
 train:
   #pretrained_file: 'Arc_11'
-  pretrained_file: 'densenet121-known-best'
+  #pretrained_file: 'CosNet-known-densenet121-best'
+  #pretrained_file: 'CosNet-all-densenet121-4'
   batch_size: 24
   batches_per_epoch: 500
   n_epoch: 600
@@ -45,6 +47,7 @@ train:
   new_whale: 0
   use_flip: 0
   cal_score: 'mapk_known'
+  find_lr: False
 
 val:
   cal_metric_once: True
@@ -64,7 +67,10 @@ loss:
   name: 'MixLoss'
   radius: 70
   margin: 0.5
-  l2_factor: !!float 1e-2
+  cos_loss_factor: 1.0
+  bin_loss_factor: 0.0
+  #l2_factor: !!float 1e-2
+  l2_factor: !!float 3e-4
   #l2_factor: !!float 0.0
 
 #transform:
@@ -77,6 +83,5 @@ loss:
 
 scoreboard:
   len: 11
-  sort: 'inc'
-  mode: 'min'
+  sort: 'dec'
 

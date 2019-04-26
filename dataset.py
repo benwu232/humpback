@@ -18,7 +18,7 @@ def prepare_df(config):
     df_counted = df.groupby('Id').count()
     label_weight = len(df) / np.array(df_counted.Image.tolist())
     label_weight = torch.tensor(label_weight[:-1]).to(device)
-    val_idxes = split_data_set(df, seed=1)
+    val_idxes = split_data_set(df, seed=97)
     #val_idxes = split_whale_idx(df, new_whale_method=(config.train.new_whale!=0), seed=97)
     #val_idxes = split_whale_idx(df, new_whale_method=0, seed=97)
     #val_idxes = split_whale_idx(df, new_whale_method=config.train.new_whale, seed=97)
@@ -145,7 +145,7 @@ class WhaleDataSet(Dataset):
         if index >= self.len:
             flip = True
         index %= self.len
-        index = self.idxes[index]
+        index = self.idxes[index]   #get the real index
         if self.mode == 'test':
             fname = Path(self.test_list[index])
             bname = fname.name

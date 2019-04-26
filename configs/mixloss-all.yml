@@ -1,5 +1,4 @@
 
-#device: 'cpu'
 n_process: 6
 
 env:
@@ -25,17 +24,20 @@ model:
   margin: 0.5
   n_class: 5005
   drop_rate: 0.5
+  drop_rate2: 0.3
   pretrain: 1
 
 
 train:
   #pretrained_file: 'Arc_11'
-  pretrained_file: 'densenet121-known-best'
+  #pretrained_file: 'CosNet-known-densenet121-best'
+  pretrained_file: 'CosNet-known-densenet121-4'
   batch_size: 24
   batches_per_epoch: 500
   n_epoch: 600
   patience: 20
   balance: 0
+  #method: 1
   method: 10
   true_wd: True
   wd: !!float 1e-2
@@ -65,9 +67,9 @@ loss:
   name: 'MixLoss'
   radius: 70
   margin: 0.5
-  bin_loss_factor: 100
-  cos_loss_factor: 0.0
-  l2_factor: !!float 1e-4
+  bin_loss_factor: 30
+  cos_loss_factor: 1.0
+  l2_factor: !!float 2e-4
   #l2_factor: !!float 0.0
 
 #transform:
@@ -80,6 +82,5 @@ loss:
 
 scoreboard:
   len: 11
-  sort: 'inc'
-  mode: 'min'
+  sort: 'dec'
 

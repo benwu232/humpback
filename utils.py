@@ -29,6 +29,7 @@ BS = 32
 
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
+#device = torch.device("cpu")
 
 new_whale_id = 'z_new_whale'
 
@@ -114,15 +115,15 @@ def split_data_set(df, seed=97):
     Split whale dataset to train and valid set
     seed: Random seed for shuffling
     '''
-    n_known_whale = 400
-    n_new_whale = 111
+    n_known_whale = 1000
+    n_new_whale = int(n_known_whale * 0.276)
     np.random.seed(seed)
     val_idxes = []
     new_whale_idxes = []
     for name, group in df.groupby('Id'):
         group_num = len(group)
         group_idxes = group.index.tolist()
-        if group_num == 2:
+        if group_num in [2, 3]:
             val_idxes.append(random.choice(group_idxes))
         elif name == new_whale_id:
             np.random.shuffle(group_idxes)
@@ -219,40 +220,6 @@ def plot_lr(self):
         plt.savefig(os.path.join(self.save_path, 'lr_plot.png'))
 
 
-def cal_mapk(data_matrix: tensor, targets: tensor, target_idx2class=[], k=5, average=True, threshold=2.0,
-             ref_idx2class=[], descending=False):
-    sorted_dists, sorted_idxes = data_matrix.sort(dim=1, descending=descending)
-    sorted_dists = sorted_dists.detach().cpu().numpy()
-    sorted_idxes = sorted_idxes.detach().cpu().numpy()
-    targets = targets.detach().cpu().numpy()
-
-    # topk_matrix = 0 - np.ones((data_matrix.shape[0], k), dtype=np.int32)
-    topk_matrix = [['' for _ in range(k)] for _ in range(sorted_idxes.shape[0])]
-    mapk = np.zeros(len(targets))
-    for row, (values, idxes) in enumerate(zip(sorted_dists, sorted_idxes)):
-        c = 0
-        for col, (value, idx) in enumerate(zip(values, idxes)):
-            if value > threshold and 'new_whale' not in topk_matrix[row]:
-                topk_matrix[row][c] = 'new_whale'
-                c += 1
-                if target_idx2class[targets[row]].obj == 'new_whale' and mapk[row] == 0:
-                    mapk[row] = 1 / c
-            else:
-                class_str = ref_idx2class[idx].obj
-                if class_str not in topk_matrix[row]:
-                    topk_matrix[row][c] = class_str
-                    c += 1
-                    if target_idx2class[targets[row]].obj == class_str and mapk[row] == 0:
-                        mapk[row] = 1 / c
-
-            if c >= k:
-                break
-    if average:
-        mapk = mapk.mean()
-
-    return topk_matrix, mapk
-
-
 # https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/average_precision.py
 def apk(actual, predicted, k=10):
     if len(predicted) > k:
@@ -282,14 +249,14 @@ def acc_known(preds, targs, new_whale_idx=5004):
     acc = (softmax == targs).sum().float() / len(targs)
     return acc
 
-def acc_all(preds, targs, new_whale_idx=5004, with_new_whale=True):
+def cal_acc(preds, targs, new_whale_idx=5004, with_new_whale=True):
     new_whale = torch.tensor(new_whale_idx).to(device)
     targs = targs.to(device)
     softmax = preds[0].max(1)[1].view_as(targs)
     value = softmax
     if with_new_whale:
         #bin = (torch.sigmoid(preds[0]) > 0.5).long().sum(dim=-1)
-        bin = (torch.sigmoid(preds[1]) > 0.5).long()
+        bin = (torch.sigmoid(preds[1]) >= 0.5).long()
         bin = bin.view_as(targs)
         value = torch.where(bin==0, new_whale, softmax)
     acc = (value == targs).sum().float() / len(targs)
@@ -325,13 +292,13 @@ def mapk_known(preds, targs, k=5, new_whale_idx=5004):
         scores[:,kk] = (top5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
-def mapk_all(preds, targs, k=5, new_whale_idx=5004, with_new_whale=True):
+def cal_mapk(preds, targs, k=5, new_whale_idx=5004, with_new_whale=True):
     new_whale = torch.tensor(new_whale_idx).to(device)
     #print(preds.shape, targs.shape)
     top5 = preds[0].topk(k, 1)[1]
     if with_new_whale:
         #bin = (torch.sigmoid(bin_logits) > 0.5).long().sum(dim=-1)
-        bin = (torch.sigmoid(preds[1]) > 0.5).long()
+        bin = (torch.sigmoid(preds[1]) >= 0.5).long()
         bin = bin.view(-1)
         for row in range(len(targs)):
             if bin[row] == 0:
@@ -343,6 +310,23 @@ def mapk_all(preds, targs, k=5, new_whale_idx=5004, with_new_whale=True):
         scores[:,kk] = (top5[:,kk] == targs).float() / float(kk+1)
     return scores.max(dim=1)[0].mean()
 
+def insert_new_whale(preds, threshold, new_whale=5004):
+    top5_values, top5_idxes = preds[0].topk(5, 1)
+    for row in range(len(top5_idxes)):
+        for col in range(5):
+            if top5_values[row, col] < threshold:
+                top5_idxes[row, col+1:] = top5_idxes[row, col:-1]
+                top5_idxes[row, col] = new_whale
+                break
+    return top5_idxes
+
+def cal_map5_thresh(preds, targs, threshold, new_whale=5004):
+    targs = targs.to(device)
+    top5_idxes = insert_new_whale(preds, threshold, new_whale)
+    scores = torch.zeros(len(targs), 5).float().to(device)
+    for kk in range(5):
+        scores[:,kk] = (top5_idxes[:,kk] == targs).float() / float(kk+1)
+    return scores.max(dim=1)[0].mean()
 
 '''
 def accuracy_with_unknown(preds, targs, k=5, unknown_idx=5004):

@@ -196,19 +196,33 @@ class MixHead(nn.Module):
 
         #self.bn1 = nn.BatchNorm1d(self.in_features)
         self.sphere_multi = CosSimCenters(self.in_features, self.out_features)
-        self.sphere_binary = nn.Linear(self.out_features, 1)
-        nn.init.xavier_normal_(self.sphere_binary.weight)
+        self.sphere_binary = nn.Sequential(
+            nn.Dropout(config.model.drop_rate2),
+            #nn.Linear(self.out_features, 1),
+            nn.Linear(self.out_features, 70),
+            nn.Dropout(config.model.drop_rate2),
+            nn.Linear(70, 1),
+        )
+        #nn.init.xavier_normal_(self.sphere_binary.weight)
+        #self.emb_binary = nn.Sequential
+        #(
+        #    nn.BatchNorm1d(self.in_features),
+        #    nn.Dropout(config.model.drop_rate),
+        #    nn.Linear(self.in_features, 30),
+        #    nn.BatchNorm1d(30),
+        #)
 
-        for m in self.head.children():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight)
-                #nn.init.kaiming_normal_(self.head)
+        for ms in [self.head.children(), self.sphere_binary.children()]:
+            for m in ms:
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_normal_(m.weight)
+                    #nn.init.kaiming_normal_(self.head)
 
-        self.binary_classifier = nn.Linear(self.in_features, self.out_features)
-        nn.init.xavier_normal_(self.binary_classifier.weight)
+        #self.binary_classifier = nn.Linear(self.in_features, self.out_features)
+        #nn.init.xavier_normal_(self.binary_classifier.weight)
 
-        self.unknown_classifier = nn.Linear(self.in_features, 1)
-        nn.init.xavier_normal_(self.unknown_classifier.weight)
+        #self.unknown_classifier = nn.Linear(self.in_features, 1)
+        #nn.init.xavier_normal_(self.unknown_classifier.weight)
 
     def cal_features(self, x):
         return self.forward(x)
@@ -216,13 +230,17 @@ class MixHead(nn.Module):
     def forward(self, x):
         ho = self.head(x)
         cos_th = self.sphere_multi(ho)
-        #bin_logits = self.sphere_binary(cos_th)
+        cos_sorted = cos_th.sort(dim=1, descending=True)[0]
+        bin_logits = self.sphere_binary(cos_sorted)
         #bin_logits = self.binary_classifier(ho)
-        bin_logits = self.unknown_classifier(ho)
+        #bin_logits = self.unknown_classifier(ho)
         #return torch.cat([cos_th, bin_logits], dim=1)
-        return [cos_th, bin_logits, self.sphere_multi.centers]
+        #return [cos_th, bin_logits, self.sphere_multi.centers]
+        return [cos_th, bin_logits]
 
 def predict_mixhead(model, dl):
+    global device
+    model = model.to(device)
     model.eval()
     with torch.no_grad():
         cos_o, bin_o = [], []
@@ -230,7 +248,7 @@ def predict_mixhead(model, dl):
         y_list = []
         for x, y in progress_bar(dl):
             x = torch.tensor(x).to(device)
-            [cos_logits, bin_logits, _] = model(x)
+            [cos_logits, bin_logits] = model(x)
             cos_o.append(cos_logits)
             bin_o.append(bin_logits)
             y_list.append(y)
@@ -395,6 +413,31 @@ class CosFaceLoss(nn.CrossEntropyLoss):
         return F.cross_entropy(logits, target, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
 
 
+class CosFaceLossEx(nn.CrossEntropyLoss):
+    def __init__(self, weight=None, size_average=None, ignore_index=-100,
+                 reduce=None, reduction='mean', radius=60, margin=0.4):
+        super().__init__(weight, size_average, ignore_index, reduce, reduction)
+        self.radius = radius
+        self.margin = margin
+        self.unknown = 5004
+
+    #@weak_script_method
+    def forward(self, input, target):
+        target_known = target[target!=self.unknown]
+        cos_th = input
+        if not isinstance(input, torch.Tensor):
+            cos_th = input[0]
+        target_onehot = onehot_enc(target_known, n_class=cos_th.shape[-1])
+        logits = self.radius * (cos_th * (1 - target_onehot) + (cos_th - self.margin) * target_onehot)
+        loss_known = F.cross_entropy(logits, target_known, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
+
+        target_unknown = target[target==self.unknown]
+        input_unknown = cos_th[target==self.unknown]
+        unknown = F.cross_entropy(input_unknown, target_unknown, weight=self.weight, ignore_index=self.ignore_index, reduction=self.reduction)
+        loss_unknown = unknown.max(dim=1)[0] - unknown.mean(dim=1)
+        return loss_known + loss_unknown
+
+
 class BinArcFaceLoss(nn.Module):
     def __init__(self, weight=None, size_average=None, ignore_index=-100,
                  reduce=None, reduction='mean', radius=60, margin=0.5):
@@ -513,8 +556,81 @@ def bce1(input, target, n_hard=None):
 
         return value.mean()
 
-
 class MixLoss(nn.Module):
+    def __init__(self, radius=60, margin=0.4, l2_factor=1e-3, cos_loss_factor=1.0, bin_loss_factor=1.0, new_whale_idx=5004):
+        super().__init__()
+        #self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
+        self.cos_loss = ArcFaceLoss(radius=radius, margin=margin)#, reduction='none')
+        #self.bin_loss = BinCosFaceLoss(radius=radius, margin=margin)
+        self.bin_cos_loss = BinArcFaceLoss(radius=radius, margin=margin)
+        self.unknown = new_whale_idx
+        self.cnt = -1
+        self.avg_loss_known = 20.0
+        self.n_hard = 200
+        self.step = 0
+        self.sec_len = 20
+        self.margin = 0.6
+        self.n_thresh = 0.01
+        self.l2_factor = l2_factor
+        self.bin_loss_factor = bin_loss_factor
+        self.cos_loss_factor = cos_loss_factor
+
+        #self.model = model
+
+    def forward(self, logits, target):
+        self.step += 1
+        known_idxes = target != self.unknown
+        unknown_idxes = target == self.unknown
+
+        cos_logits = logits[0]
+        #for known, cos_loss
+        loss_known = 0.0
+        if self.cos_loss_factor > 0:
+            logits_known = cos_logits[known_idxes]
+            target_known = target[known_idxes]
+            loss_known = self.avg_loss_known
+            if len(target_known):
+                loss_known = self.cos_loss(logits_known, target_known)
+                self.avg_loss_known = self.avg_loss_known * 0.9 + loss_known * 0.1
+
+        #(logits_known.topk(3)[0][:, 1] - logits_known.topk(3)[0][:, 2]).mean()
+        #logits_unknown = cos_logits[unknown_idxes]
+        #(logits_unknown.topk(2)[0][:, 0] - logits_unknown.topk(2)[0][:, 1]).mean()
+
+        loss_unknown = 0.0
+        #if len(cos_logits[unknown_idxes]):
+        #    loss_unknown = cos_logits[unknown_idxes].max(dim=1)[0].max() - cos_logits[unknown_idxes].max(dim=1)[0].mean()
+        #    loss_unknown *= 100
+
+        bin_loss = 0.0
+        if self.bin_loss_factor > 0:
+            bin_logits = logits[1].view_as(target)
+            pos_weight = torch.tensor([0.618] * len(target)).to(device)
+            bin_loss = F.binary_cross_entropy_with_logits(bin_logits, (target != self.unknown).float(), pos_weight=pos_weight)
+            #bin_loss = focal_loss_bin(bin_logits, (target!=self.new_whale_idx).float(), gamma=2.0)
+            bin_loss *= self.bin_loss_factor
+
+        #l2 regularization
+        l2_loss = 0.0
+        if self.l2_factor > 0:
+            l2_loss = torch.tensor(0, dtype=torch.float32).to(device)
+            if self.model:
+                for param in self.model.parameters():
+                    l2_loss += (param ** 2).sum()
+                l2_loss *= self.l2_factor
+
+        #loss = loss_known + loss_bin + l2_loss
+        #loss = loss_known + loss_bin_cos + new_whale_loss + l2_loss
+        loss = loss_known + loss_unknown + bin_loss + l2_loss# + center_loss
+
+        self.cnt += 1
+        if self.cnt % 1000 == 0:
+            print(f'loss_known={loss_known}, loss_unknown={loss_unknown}, bin_loss={bin_loss}, l2_loss={l2_loss}\n')#, center_loss={center_loss} \n')
+
+        return loss
+
+
+class MixLoss2(nn.Module):
     def __init__(self, radius=60, margin=0.4, l2_factor=1e-3, cos_loss_factor=1.0, bin_loss_factor=1.0, new_whale_idx=5004):
         super().__init__()
         #self.cos_loss = CosFaceLoss(radius=radius, margin=margin)#, reduction='none')
@@ -730,7 +846,7 @@ class CalMap5Callback(fastai.callbacks.tracker.TrackerCallback):
             targets = torch.cat(targets)
             #acc = accuracy_with_unknown([preds_known, preds_unknown], targets)
             #print(acc)
-            map_score = mapk_all([preds_known, preds_unknown], targets)
+            map_score = cal_mapk([preds_known, preds_unknown], targets)
             print(f'map score: {map_score}\n')
 
 
@@ -755,9 +871,22 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
     "A `TrackerCallback` that saves the model when monitored quantity is best."
     def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', config=None):
         super().__init__(learn, monitor=monitor, mode=mode)
-        self.prefix = config.model.backbone
+        self.prefix = f'{config.task.name}-{config.model.backbone}'
         self.monitor = monitor
         self.config = config
+        self.best_score = 0
+        self.mode = mode
+        self.sort = config.scoreboard.sort
+        if self.sort == 'dec':
+            self.operator = np.greater
+        else:
+            self.operator = np.less
+        if monitor == 'val_loss':
+            self.best_score = np.inf
+            self.mode = 'min'
+            self.operator = np.less
+            self.sort = 'inc'
+
         if isinstance(scoreboard, Scoreboard):
             self.scoreboard = scoreboard
         else:
@@ -769,28 +898,16 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
                 else:
                     self.scoreboard_file = pdir.models/f'scoreboard-{scoreboard}.pkl'
             self.sb_len = config.scoreboard.len
-            self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort='dec')
-        self.best_score = 0
-        self.mode = mode
-        self.operator = np.greater
-        if monitor == 'val_loss':
-            self.best_score = np.inf
-            self.mode = 'min'
-            self.operator = np.less
+            self.scoreboard = Scoreboard(self.scoreboard_file, self.sb_len, sort=self.sort)
+
         self.patience = config.train.patience
         self.wait = 0
 
-        self.monitor = 'map5'
-        self.cal_score = None
+        #self.cal_score = None
         if config.train.cal_score == 'mapk_known':
             self.score_idx = 4
-            self.operator = np.greater
-            self.best_score = 0
         elif config.train.cal_score == 'mapk_all':
             self.score_idx = 2
-            self.operator = np.greater
-            self.best_score = 0
-
 
     def jump_to_epoch(self, epoch:int)->None:
         try:
@@ -810,16 +927,17 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
         if self.monitor == 'val_loss':
             score = self.get_monitor_value()
         else:  #map score
-           score = self.learn.validate(self.learn.data.valid_dl)
-        print(f'score = {score}')
-        score = score[self.score_idx].item()
-        print(f'ref_score = {score}')
+            score = self.learn.validate(self.learn.data.valid_dl)
+            print(f'scores = {score}')
+            score = score[self.score_idx].item()
+            print(f'score = {score}, best_score = {self.best_score}')
 
         # early stopping
         if score is None: return
         #if score > self.best_score:
         if self.operator(score, self.best_score):
             self.best_score,self.wait = score,0
+            print(f'Update best_score to: {self.best_score}')
         else:
             self.wait += 1
             print(f'wait={self.wait}, patience={self.patience}')
@@ -831,7 +949,7 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
         #if len(self.scoreboard) == 0 or score > self.scoreboard[-1][0]:
         if not self.scoreboard.is_full() or self.operator(score, self.scoreboard[-1]['score']):
             store_file = f'{self.prefix}-{epoch}'
-            save_path = self.learn.save(store_file, return_path=True)
+            save_path = self.learn.save(store_file, return_path=True, with_opt=False)
             self.config.env.plog.info('$$$$$$$$$$$$$ Good score {} at training step {} $$$$$$$$$'.format(score, epoch))
             self.config.env.plog.info(f'save to {save_path}')
             update_dict = {'score': score,
@@ -848,8 +966,9 @@ class ScoreboardCallback(fastai.callbacks.tracker.TrackerCallback):
         #self.learn.save(f'linshi')
         if len(self.scoreboard):
             self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
+            self.learn.export(f'{self.prefix}.pkl')
 
-
+'''
 class ScoreboardCallback1(fastai.callbacks.tracker.TrackerCallback):
     "A `TrackerCallback` that saves the model when monitored quantity is best."
     def __init__(self, learn:Learner, scoreboard, monitor:str='val_score', mode:str='auto', config=None):
@@ -928,3 +1047,4 @@ class ScoreboardCallback1(fastai.callbacks.tracker.TrackerCallback):
         if len(self.scoreboard):
             self.learn.load(self.scoreboard[0]['file'].name[:-4], purge=False)
 
+'''
